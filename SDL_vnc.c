@@ -1009,7 +1009,7 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 			// Desktop Name
 			if (vnc->serverFormat.namelength>(VNC_BUFSIZE-1)) {
 				DBERROR("Desktop name too long: %i\n",vnc->serverFormat.namelength);
-				return 0;
+                    //return 0;
 			}
 			if (vnc->serverFormat.namelength>1) {
 				result = Recv(vnc->socket,vnc->serverFormat.name,vnc->serverFormat.namelength,0);
