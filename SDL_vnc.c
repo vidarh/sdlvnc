@@ -21,6 +21,8 @@ Additions by B. Slawik, info at bernhardslawik dot de
  #include <unistd.h>
  #include <sys/socket.h>
  #include <netinet/in.h>
+ #include <arpa/inet.h>
+
  // For alternative "gethostbyname" and "hostent"
  #include <netdb.h>
 #endif
