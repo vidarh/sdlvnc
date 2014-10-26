@@ -1,0 +1,10 @@
+CHANGES/VERSION
+===============
+
+v1.0.2 - 20 Aug 2010 15:28:27 UTC
+* add VS2008 and VS2010 solutions and fix VS compiler issues
+* add compatibility for non-win32
+* add support for new RFB codes and  palm pre byte order
+
+v1.0.0 - 28 Oct 2004
+* Initial release
