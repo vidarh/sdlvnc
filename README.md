@@ -16,7 +16,10 @@ My intent is to:
 
  * Refactor the code.
  * Fix issues on 64 bit platforms (for now I pass -m32 to gcc)
- * Speed up the sockets 
+ * Speed up the sockets handling (currently does lots of small
+   read/writes)
+ * Improve temporary buffer handling.
+ * (possibly decouple from SDL)
  * Use it as a basis for some experimental VNC improvements for
    some specific use-cases I have in mind. More on that if/when I
    get there.
