@@ -193,7 +193,7 @@ static int read_security_type(tSDL_vnc *vnc) {
             result = send(vnc->socket,vnc->buffer,1,0);
             if (result != 1) {
                 DBERROR("Write error on security type selection.\n");
-            return 0;
+                return 0;
             }
             
         } else {
@@ -247,6 +247,22 @@ static int HandleServerMessage_colormap(tSDL_vnc * vnc)
     return 1;
 }
 
+
+static void blit_scratch(tSDL_vnc * vnc,
+                        tSDL_vnc_serverRectangle serverRectangle)
+{
+    SDL_Rect trec;
+    trec.x=serverRectangle.x;
+    trec.y=serverRectangle.y;
+    trec.w=serverRectangle.width;
+    trec.h=serverRectangle.height;
+    SDL_LockMutex(vnc->mutex);
+    SDL_BlitSurface(vnc->scratchbuffer, NULL, vnc->framebuffer, &trec);
+    GrowUpdateRegion(vnc,&trec);
+    SDL_UnlockMutex(vnc->mutex);
+}
+
+
 static int ServerRectangle_Raw(tSDL_vnc * vnc,
                                tSDL_vnc_serverRectangle serverRectangle)
 {
@@ -255,15 +271,7 @@ static int ServerRectangle_Raw(tSDL_vnc * vnc,
     int result = Recv(vnc->socket,(unsigned char *)vnc->scratchbuffer->pixels,bytes_to_read,0);
     if (result==bytes_to_read) {
         DBMESSAGE("Blitting %i bytes of raw pixel data.\n",bytes_to_read);
-        SDL_Rect trec, srec;
-        trec.x=serverRectangle.x;
-        trec.y=serverRectangle.y;
-        trec.w=serverRectangle.width;
-        trec.h=serverRectangle.height;
-        SDL_LockMutex(vnc->mutex);
-        SDL_BlitSurface(vnc->scratchbuffer, NULL, vnc->framebuffer, &trec);
-        GrowUpdateRegion(vnc,&trec);
-        SDL_UnlockMutex(vnc->mutex);
+        blit_scratch(vnc,serverRectangle);
         DBMESSAGE("Blitted raw pixel data.\n");
     } else {
         DBERROR("Error on pixel data. Got %i of %i bytes.\n",result,bytes_to_read);
@@ -315,56 +323,56 @@ static int ServerRectangle_Cursor(tSDL_vnc * vnc,
     // Store cursor hotspot
     vnc->cursorhotspot.x=serverRectangle.x;
     vnc->cursorhotspot.y=serverRectangle.y;
-    vnc->gotcursor;
     //
     int bytes_to_read = serverRectangle.width*serverRectangle.height*4;
     int result = Recv(vnc->socket,(unsigned char *)vnc->scratchbuffer->pixels,bytes_to_read,0);
-    if (result==bytes_to_read) {
-        DBMESSAGE("Read cursor pixel data %u byte.\n",bytes_to_read);
-        // Mask data
-        bytes_to_read = (unsigned int)floor((serverRectangle.width+7.0)/8.0)*serverRectangle.height;
-        unsigned char *cursormask=(unsigned char *)malloc(bytes_to_read);
-        if (cursormask) {
-            result = Recv(vnc->socket,(unsigned char *)cursormask,bytes_to_read,0);
-            if (result==bytes_to_read) {
-                DBMESSAGE("Read cursor mask data %u byte.\n",bytes_to_read);
-                //
-                // Blit data into cursor image
-                SDL_LockMutex(vnc->mutex);
-                SDL_BlitSurface(vnc->scratchbuffer,NULL,vnc->cursorbuffer,NULL);
-                // Process mask into alpha of cursor image
-                unsigned char * target=(unsigned char *)vnc->cursorbuffer->pixels;
-                target=target + 3;
-                int byteindex=0;
-                int cy, cx;
-                int bitindex;
-                for (cy=0; cy<serverRectangle.height; cy++) {
-                    for (cx=0; cx<serverRectangle.width; cx++) {
-                        bitindex=cx % 8;
-                        if (cursormask[byteindex] & bitfield[bitindex]) {
-                            *target=255;
-                        } else {
-                            *target=0;
-                        }
-                        if (bitindex==7) byteindex++;
-                        target += 4;
-                    } // cx loop
-                    if (bitindex<7) byteindex++;
-                } // cy loop
-                free(cursormask);
-                SDL_UnlockMutex(vnc->mutex);
-            } else {
-                DBERROR("Error on cursor mask. Got %i of %i bytes.\n",result,bytes_to_read);
-                return 0;
-            }
-        } else {
-            DBERROR("Could not allocate cursor mask.\n");
-            return 0;
-        }
-    } else {
+    
+    if (result!=bytes_to_read) {
         DBERROR("Error on cursor data. Got %i of %i bytes.\n",result,bytes_to_read);
         return 0;
     }
+
+    DBMESSAGE("Read cursor pixel data %u byte.\n",bytes_to_read);
+    // Mask data
+    bytes_to_read = (unsigned int)floor((serverRectangle.width+7.0)/8.0)*serverRectangle.height;
+    unsigned char *cursormask=(unsigned char *)malloc(bytes_to_read);
+    if (!cursormask) {
+        DBERROR("Could not allocate cursor mask.\n");
+        return 0;
+    }
+
+    result = Recv(vnc->socket,(unsigned char *)cursormask,bytes_to_read,0);
+    if (result!=bytes_to_read) {
+        DBERROR("Error on cursor mask. Got %i of %i bytes.\n",result,bytes_to_read);
+        return 0;
+    }
+
+    DBMESSAGE("Read cursor mask data %u byte.\n",bytes_to_read);
+    //
+    // Blit data into cursor image
+    SDL_LockMutex(vnc->mutex);
+    SDL_BlitSurface(vnc->scratchbuffer,NULL,vnc->cursorbuffer,NULL);
+    // Process mask into alpha of cursor image
+    unsigned char * target=(unsigned char *)vnc->cursorbuffer->pixels;
+    target=target + 3;
+    int byteindex=0;
+    int cy, cx;
+    int bitindex;
+    for (cy=0; cy<serverRectangle.height; cy++) {
+        for (cx=0; cx<serverRectangle.width; cx++) {
+            bitindex=cx % 8;
+            if (cursormask[byteindex] & bitfield[bitindex]) {
+                *target=255;
+            } else {
+                *target=0;
+            }
+            if (bitindex==7) byteindex++;
+            target += 4;
+        } // cx loop
+        if (bitindex<7) byteindex++;
+    } // cy loop
+    free(cursormask);
+    SDL_UnlockMutex(vnc->mutex);
     return 1;
 }
 
@@ -420,7 +428,6 @@ static int ServerRectangle_RRE(tSDL_vnc * vnc,
     return 1;
 }
 
-
 static int ServerRectangle_CORRE(tSDL_vnc * vnc,
                                tSDL_vnc_serverRectangle serverRectangle)
 {
@@ -436,7 +443,7 @@ static int ServerRectangle_CORRE(tSDL_vnc * vnc,
         SDL_FillRect(vnc->scratchbuffer, NULL, serverCoRRE.background);
         // Draw subrectangles
         unsigned int num_subrectangles=0;
-        SDL_Rect trec, srec;
+        SDL_Rect srec;
         while (num_subrectangles<serverCoRRE.number) {
             num_subrectangles++;
             result = Recv(vnc->socket,&serverCoRREdata,8,0);
@@ -452,14 +459,7 @@ static int ServerRectangle_CORRE(tSDL_vnc * vnc,
             }
         }
         DBMESSAGE("Drawn %i subrectangles.\n", num_subrectangles);
-        trec.x=serverRectangle.x;
-        trec.y=serverRectangle.y;
-        trec.w=serverRectangle.width;
-        trec.h=serverRectangle.height;
-        SDL_LockMutex(vnc->mutex);
-        SDL_BlitSurface(vnc->scratchbuffer, NULL, vnc->framebuffer, &trec);
-        GrowUpdateRegion(vnc,&trec);
-        SDL_UnlockMutex(vnc->mutex);
+        blit_scratch(vnc, serverRectangle);
         DBMESSAGE("Blitted CoRRE pixels.\n");
     } else {
         DBERROR("Error on CoRRE header. Got %i of %i bytes.\n",result,8);
@@ -613,14 +613,7 @@ static int ServerRectangle_HexTile(tSDL_vnc * vnc,
         } // hx loop
     } // hy loop
     //
-    trec.x=serverRectangle.x;
-    trec.y=serverRectangle.y;
-    trec.w=serverRectangle.width;
-    trec.h=serverRectangle.height;
-    SDL_LockMutex(vnc->mutex);
-    SDL_BlitSurface(vnc->scratchbuffer, NULL, vnc->framebuffer, &trec);
-    GrowUpdateRegion(vnc,&trec);
-    SDL_UnlockMutex(vnc->mutex);
+    blit_scratch(vnc,serverRectangle);
     DBMESSAGE("Blitted Hextile pixels.\n");
     return 1;
 }
@@ -661,9 +654,41 @@ int ReadServerRectangle(tSDL_vnc * vnc,
 }
 
 
-int HandleServerMessage(tSDL_vnc *vnc)
+static int PrepScratchBuffer(tSDL_vnc *vnc, 
+                             tSDL_vnc_serverRectangle serverRectangle)
 {
-	int num_rectangles, hx, hy, bx, by, cx, cy, rowindex, bitindex, byteindex;
+    // Do we have a scratchbuffer
+    if (vnc->scratchbuffer) {
+        /* Check size */
+        // FIXME: This seems very wasteful. width and height of scratchbuffer
+        // is used, but should check if any benefits to not continuously redoing this.
+        // Or at least keep a few common sizes.
+        if ((vnc->scratchbuffer->w != serverRectangle.width) || 
+            (vnc->scratchbuffer->h != serverRectangle.height)) {
+
+            DBMESSAGE("Deleting existing scratchbuffer. w=%d,h=%d\n", vnc->scratchbuffer->w, vnc->scratchbuffer->h);
+            SDL_FreeSurface(vnc->scratchbuffer);
+            vnc->scratchbuffer=NULL;
+        }
+    }
+    if (!(vnc->scratchbuffer)) {
+        // Create new scratchbuffer
+        vnc->scratchbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,serverRectangle.width,serverRectangle.height,32,vnc->rmask,vnc->gmask,vnc->bmask,0);
+        if (vnc->scratchbuffer) {
+            SDL_SetAlpha(vnc->scratchbuffer,0,0);
+            DBMESSAGE("Created new scratchbuffer w=%d,h=%d\n", serverRectangle.width, serverRectangle.height);
+        } else {
+            DBERROR("Error creating scratchbuffer.\n");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+
+static int HandleServerMessage(tSDL_vnc *vnc)
+{
+	int num_rectangles;
 	tSDL_vnc_serverMessage serverMessage;
 	tSDL_vnc_serverUpdate serverUpdate;
 	tSDL_vnc_serverRectangle serverRectangle;
@@ -689,46 +714,25 @@ int HandleServerMessage(tSDL_vnc *vnc)
 						num_rectangles++;
                         DBMESSAGE("Rectangle %i of %i:\n",num_rectangles,serverUpdate.rectangles);
                         if (ReadServerRectangle(vnc, &serverRectangle)) {
-							// Do we have a scratchbuffer
-							if (vnc->scratchbuffer) {
-								/* Check size */
-								if ( (!(vnc->scratchbuffer->w == serverRectangle.width)) || (!(vnc->scratchbuffer->h == serverRectangle.height)) ) {
-									/* Clean out existing scratchbuffer */
-									SDL_FreeSurface(vnc->scratchbuffer);
-									vnc->scratchbuffer=NULL;
-									DBMESSAGE("Deleted existing scratchbuffer.\n");
-								}
-							}
-							if (!(vnc->scratchbuffer)) {
-								// Create new scratchbuffer
-								vnc->scratchbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,serverRectangle.width,serverRectangle.height,32,vnc->rmask,vnc->gmask,vnc->bmask,0);
-								if (vnc->scratchbuffer) {
-									SDL_SetAlpha(vnc->scratchbuffer,0,0);
-									DBMESSAGE("Created new scratchbuffer.\n");
-								} else {
-									DBERROR("Error creating scratchbuffer.\n");
-									return 0;
-								}
-							}
+                            if (PrepScratchBuffer(vnc, serverRectangle) == 0) return 0;
 
 							/* Rectangle Data */
 							switch (serverRectangle.encoding) {
-								case 0:
-                                    if (ServerRectangle_Raw(vnc, serverRectangle) == 0) return 0;
-                                    break;
-								case 1:
-                                    if (ServerRectangle_CopyRect(vnc, serverRectangle) == 0) return 0;
-                                    break;
-								case 2:
-                                    if (ServerRectangle_RRE(vnc, serverRectangle) == 0) return 0;
-									break;
-								case 4:
-                                    if (ServerRectangle_CORRE(vnc, serverRectangle) == 0) return 0;
-									break;
-								case 5:
-                                    if (ServerRectangle_HexTile(vnc, serverRectangle) == 0) return 0;
-									break;
-
+                            case 0:
+                                if (ServerRectangle_Raw(vnc, serverRectangle) == 0) return 0;
+                                break;
+                            case 1:
+                                if (ServerRectangle_CopyRect(vnc, serverRectangle) == 0) return 0;
+                                break;
+                            case 2:
+                                if (ServerRectangle_RRE(vnc, serverRectangle) == 0) return 0;
+                                break;
+                            case 4:
+                                if (ServerRectangle_CORRE(vnc, serverRectangle) == 0) return 0;
+                                break;
+                            case 5:
+                                if (ServerRectangle_HexTile(vnc, serverRectangle) == 0) return 0;
+                                break;
                             case 16:
                                 DBERROR("ZRLE encoding - ignored.\n");
                                 return 0;
@@ -737,7 +741,7 @@ int HandleServerMessage(tSDL_vnc *vnc)
                             case 0xffffff11:
                                 if (ServerRectangle_Cursor(vnc, serverRectangle) == 0) return 0;
                                 break;
-
+                                
                             case 0xffffff21:
                                 DBMESSAGE("DESKTOP pseudo-encoding (ignored).\n");
                                 break;
@@ -1188,7 +1192,7 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 				} else {
 					DBERROR("Unknown mode.\n");
 				}
-				if (newpos=(unsigned char *)strstr((const char *)curpos,",")) {
+				if ((newpos=(unsigned char *)strstr((const char *)curpos,","))) {
 					curpos=newpos+1;
 				} else {
 					*curpos=0;
@@ -1328,8 +1332,6 @@ int vncBlitFramebufferAdvanced(tSDL_vnc *vnc, SDL_Surface *target, SDL_Rect *ure
 		if (fullRefresh > 0) {
 			SDL_Rect srcrec;
 			SDL_Rect dstrec;
-			int x = 0;
-			int y = 0;
 			int w = target->w;
 			int h = target->h;
 			
