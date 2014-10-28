@@ -1120,9 +1120,9 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 			pixel_format.redmax=swap_16(255);
 			pixel_format.greenmax=swap_16(255);
 			pixel_format.bluemax=swap_16(255);
-			pixel_format.redshift=0;
+			pixel_format.redshift=16; // FIXME: Was 0; didn't work on my setup. WHy?
 			pixel_format.greenshift=8;
-			pixel_format.blueshift=16;
+			pixel_format.blueshift=0; // FIXME: Was 16; see above
 			memcpy((void *)&vnc->buffer[4],(void *)&pixel_format,16);
 			result = send(vnc->socket,vnc->buffer,20,0);
 			if (result == 20) {
