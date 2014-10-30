@@ -127,16 +127,6 @@ char vncLastError[512];
         tSDL_vnc_rect rect;
 	} tSDL_vnc_serverRREdata;
 
-	typedef struct tSDL_vnc_serverCoRRE {
-		uint32_t number;
-		uint32_t background;
-	} tSDL_vnc_serverCoRRE;
-
-	typedef struct tSDL_vnc_serverCoRREdata {
-        uint32_t color;
-        tSDL_vnc_rect rect;
-	} tSDL_vnc_serverCoRREdata;
-
 	typedef struct tSDL_vnc_serverHextile {
 		uint8_t mode;
 	} tSDL_vnc_serverHextile;
@@ -251,7 +241,6 @@ char vncLastError[512];
 	submode =	raw | 
 	copyrect | 
 	rre | 
-	corre(broken) |
 	hextile | 
 	zrle(unimplemented) | 
 	cursor(ignored) | 
