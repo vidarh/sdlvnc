@@ -86,7 +86,7 @@ Butchered by Vidar Hokstad, vidar@hokstad.com
 
 char *strdup(const char *s);
 
-int WaitForMessage(tSDL_vnc *vnc, unsigned int usecs)
+static int WaitForMessage(tSDL_vnc *vnc, unsigned int usecs)
 {
 	fd_set fds;
 	struct timeval timeout;
@@ -106,7 +106,7 @@ int WaitForMessage(tSDL_vnc *vnc, unsigned int usecs)
 	return result;
 }
 
-int Recv(int s, void *buf, size_t len, int flags)
+static int Recv(int s, void *buf, size_t len, int flags)
 {
 	unsigned char *target=buf;
 	size_t to_read=len;
@@ -123,7 +123,7 @@ int Recv(int s, void *buf, size_t len, int flags)
 	return len ;
 }
 
-void GrowUpdateRegion(tSDL_vnc *vnc, SDL_Rect *trec)
+static void GrowUpdateRegion(tSDL_vnc *vnc, SDL_Rect *trec)
 {
 	Sint16 ax1,ay1,ax2,ay2;
 	Sint16 bx1,by1,bx2,by2;
@@ -177,88 +177,70 @@ static int handleHextile(tSDL_vnc *vnc) {
 
 
 static int read_security_type(tSDL_vnc *vnc) {
-    // Addition for RFB 003 008
-    if (vnc->versionMinor >= 7) {
-        // Read security type
-        int result = Recv(vnc->socket,vnc->buffer,1,0);
-        if (result == 1) {
-            
-            // Security Type List! Receive number of supported Security Types
-            int nSecTypes = vnc->buffer[0];
-            if (nSecTypes == 0) {
-                DBERROR("Server offered an empty list of security types.\n");
-                return 0;
-            }
-            
-            // Receive Security Type List (Buffer overflow possible!)
-            result = Recv(vnc->socket,vnc->buffer,nSecTypes,0);
-            
-            // Find supported one...
-            vnc->security_type = 0;
-            int i;
-            for (i = 0; i < result; i++) {
-                vnc->security_type = vnc->buffer[i];
-                // Break if supported type (currently 1 or 2) found
-                if ((vnc->security_type == 1) || (vnc->security_type == 2)) break;
-            }
-            
-            // Select it
-            DBMESSAGE("Security type (select): %i\n", vnc->security_type);
-            vnc->buffer[0] = vnc->security_type;
-            
-            result = send(vnc->socket,vnc->buffer,1,0);
-            if (result != 1) {
-                DBERROR("Write error on security type selection.\n");
-                return 0;
-            }
-            
-        } else {
-            DBERROR("Read error on security type select. Expected 1 Byte for security type length.\n");
-            return 0;
-        }
-    } else {
+    if (vnc->versionMinor < 7) {
         // Read security type (simple)
-        int result = Recv(vnc->socket,vnc->buffer,4,0);
-        if (result==4) {
-            vnc->security_type=vnc->buffer[3];
-            DBMESSAGE("Security type (read): %i\n", vnc->security_type);
-        } else {
-            DBERROR("Read error on security type read.\n");
-            return 0;
-        }
+        CHECKED_READ(vnc, vnc->buffer, 4, "security type");
+        vnc->security_type=vnc->buffer[3];
+        DBMESSAGE("Security type (read): %i\n", vnc->security_type);
+        return 1;
+    }
+
+    // Addition for RFB 003 008
+
+    CHECKED_READ(vnc, vnc->buffer, 1, "security type");
+
+    // Security Type List! Receive number of supported Security Types
+    int nSecTypes = vnc->buffer[0];
+    if (nSecTypes == 0) {
+        DBERROR("Server offered an empty list of security types.\n");
+        return 0;
+    }
+        
+    // Receive Security Type List (Buffer overflow possible!)
+    int result = Recv(vnc->socket,vnc->buffer,nSecTypes,0);
+        
+    // Find supported one...
+    vnc->security_type = 0;
+    int i;
+    for (i = 0; i < result; i++) {
+        vnc->security_type = vnc->buffer[i];
+        // Break if supported type (currently 1 or 2) found
+        if ((vnc->security_type == 1) || (vnc->security_type == 2)) break;
+    }
+    
+    // Select it
+    DBMESSAGE("Security type (select): %i\n", vnc->security_type);
+    vnc->buffer[0] = vnc->security_type;
+        
+    result = send(vnc->socket,vnc->buffer,1,0);
+    if (result != 1) {
+        DBERROR("Write error on security type selection.\n");
+        return 0;
     }
 
     return 1;
 }
 
 
+/* FIXME: Is this valid when we never request a non-truecolor display? */
 static int HandleServerMessage_colormap(tSDL_vnc * vnc)
 {
 	tSDL_vnc_serverColormap serverColormap;
     DBMESSAGE("Message: colormap\n");
     // Read data, but ignore it
-    int result = Recv(vnc->socket,&serverColormap,5,0);
-    if (result==5) {
-        serverColormap.first=swap_16(serverColormap.first);
-        serverColormap.number=swap_16(serverColormap.number);
-        //
-        DBMESSAGE("Server colormap first color: %u\n",serverColormap.first);
-        DBMESSAGE("Server colormap number: %u\n",serverColormap.number);
-        //
-        while (serverColormap.number>0) {
-            result = Recv(vnc->socket,vnc->buffer,6,0);
-            if (result==6) {
-                DBMESSAGE("Got color %u.\n",serverColormap.first);
-            } else {
-                DBERROR("Read error on server colormap color. Got %i instead of %i.\n",result,6);
-                return 0;
-            }
-            serverColormap.first++;
-            serverColormap.number--;
-        }
-    } else {
-        DBERROR("Read error on server colormap. Got %i instead of %i.\n",result,5);
-        return 0;
+    CHECKED_READ(vnc, &serverColormap, 5, "server colormap");
+
+    serverColormap.first=swap_16(serverColormap.first);
+    serverColormap.number=swap_16(serverColormap.number);
+
+    DBMESSAGE("Server colormap first color: %u\n",serverColormap.first);
+    DBMESSAGE("Server colormap number: %u\n",serverColormap.number);
+
+    while (serverColormap.number>0) {
+        CHECKED_READ(vnc, &vnc->buffer, 6, "server colormap color");
+        DBMESSAGE("Got color %u.\n",serverColormap.first);
+        serverColormap.first++;
+        serverColormap.number--;
     }
     return 1;
 }
@@ -304,7 +286,6 @@ static int ServerRectangle_Raw(tSDL_vnc * vnc,
 {
     DBMESSAGE("RAW encoding.\n");
     int bytes_to_read = serverRectangle.width*serverRectangle.height*4;
-
     CHECKED_READ(vnc, (unsigned char *)vnc->scratchbuffer->pixels, bytes_to_read, "pixel data");
     DBMESSAGE("Blitting %i bytes of raw pixel data.\n",bytes_to_read);
     blit_scratch(vnc,serverRectangle);
@@ -327,7 +308,6 @@ static int ServerRectangle_CopyRect(tSDL_vnc * vnc,
     DBMESSAGE("Copyrect from %u,%u\n",srec.x,srec.y);
     srec.w=serverRectangle.width;
     srec.h=serverRectangle.height;
-    
     vnc_to_sdl_rect(&serverRectangle,&trec);
     
     SDL_LockMutex(vnc->mutex);
@@ -396,29 +376,25 @@ static int ServerRectangle_RRE(tSDL_vnc * vnc,
 	tSDL_vnc_serverRRE serverRRE;
 	tSDL_vnc_serverRREdata serverRREdata;
     DBMESSAGE("RRE encoding.\n");
-    int result = Recv(vnc->socket,&serverRRE,8,0);
-    if (result==8) {
-        serverRRE.number=swap_32(serverRRE.number);
-        //
-        DBMESSAGE("RRE of %u rectangles. Background color 0x%06x\n",serverRRE.number,serverRRE.background);
-        SDL_FillRect(vnc->scratchbuffer, NULL, serverRRE.background);
-        /* Draw subrectangles */
-        unsigned int num_subrectangles=0;
-        SDL_Rect srec;
-        while (num_subrectangles<serverRRE.number) {
-            num_subrectangles++;
-            CHECKED_READ(vnc, &serverRREdata, 12, "RRE data");
-            vnc_rect_swap(&serverRREdata.rect);
-            vnc_to_sdl_rect(&serverRREdata.rect,&srec);
-            SDL_FillRect(vnc->scratchbuffer,&srec,serverRREdata.color);
-        }
-        DBMESSAGE("Drawn %i subrectangles.\n", num_subrectangles);
-        blit_scratch(vnc, serverRectangle.rect);
-        DBMESSAGE("Blitted RRE pixels.\n");
-    } else {
-        DBERROR("Error on RRE header. Got %i of %i bytes.\n",result,8);
-        return 0;
+    CHECKED_READ(vnc, &serverRRE, 8, "RRE header");
+    serverRRE.number=swap_32(serverRRE.number);
+
+    DBMESSAGE("RRE of %u rectangles. Background color 0x%06x\n",serverRRE.number,serverRRE.background);
+    SDL_FillRect(vnc->scratchbuffer, NULL, serverRRE.background);
+    /* Draw subrectangles */
+    unsigned int num_subrectangles=0;
+    SDL_Rect srec;
+    while (num_subrectangles<serverRRE.number) {
+        num_subrectangles++;
+        CHECKED_READ(vnc, &serverRREdata, 12, "RRE data");
+        vnc_rect_swap(&serverRREdata.rect);
+        vnc_to_sdl_rect(&serverRREdata.rect,&srec);
+        serverRREdata.color = serverRREdata.color;
+        SDL_FillRect(vnc->scratchbuffer,&srec,serverRREdata.color);
     }
+    DBMESSAGE("Drawn %i subrectangles.\n", num_subrectangles);
+    blit_scratch(vnc, serverRectangle.rect);
+    DBMESSAGE("Blitted RRE pixels.\n");
     return 1;
 }
 
@@ -1025,6 +1001,9 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 			pixel_format.redmax=swap_16(255);
 			pixel_format.greenmax=swap_16(255);
 			pixel_format.bluemax=swap_16(255);
+
+            /* FIXME: These depends on endianness; current values below works for
+               little endian */
 			pixel_format.redshift=16; // Was 0, which doesn't match vnc->rmask
 			pixel_format.greenshift=8;
 			pixel_format.blueshift=0; // Was 16, which doesn't match vnc->bmask
