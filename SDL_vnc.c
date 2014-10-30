@@ -19,6 +19,7 @@ Butchered by Vidar Hokstad, vidar@hokstad.com
  /* Prototype for inet_pton */
  int inet_pton(int af, const char *src, void *dst);
 #else
+ #include <sys/select.h>
  #include <unistd.h>
  #include <sys/socket.h>
  #include <netinet/in.h>
@@ -27,6 +28,7 @@ Butchered by Vidar Hokstad, vidar@hokstad.com
  // For alternative "gethostbyname" and "hostent"
  #include <netdb.h>
 #endif
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
@@ -65,12 +67,14 @@ Butchered by Vidar Hokstad, vidar@hokstad.com
 		va_list args;
 		va_start(args, format);
 		vsprintf(vncLastError, format, args);
-		printf(">>> Error: "); printf(vncLastError);
+		printf(">>> Error: "); puts(vncLastError);
 		va_end(args);
 	}
 #else
 	#define DBERROR 	printf(">>> Error: "); printf
 #endif
+
+char *strdup(const char *s);
 
 int WaitForMessage(tSDL_vnc *vnc, unsigned int usecs)
 {
@@ -395,7 +399,7 @@ static int ServerRectangle_RRE(tSDL_vnc * vnc,
         SDL_FillRect(vnc->scratchbuffer, NULL, serverRRE.background);
         /* Draw subrectangles */
         unsigned int num_subrectangles=0;
-        SDL_Rect trec, srec;
+        SDL_Rect srec;
         while (num_subrectangles<serverRRE.number) {
             num_subrectangles++;
             result = Recv(vnc->socket,&serverRREdata,12,0);
@@ -783,7 +787,6 @@ static int HandleServerMessage_text(tSDL_vnc *vnc)
 
 static int HandleServerMessage(tSDL_vnc *vnc)
 {
-	int num_rectangles;
 	tSDL_vnc_serverMessage serverMessage;
 
 	DBMESSAGE("HandleServerMessage\n");
@@ -958,7 +961,7 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 	int i = -1;
 
 	// Initialize variables
-	vnc->buffer=(char *)malloc(VNC_BUFSIZE);
+	vnc->buffer=(unsigned char *)malloc(VNC_BUFSIZE);
 	if (!vnc->buffer) {
 		DBERROR("Out of memory allocating workbuffer.\n");
 		return 0;

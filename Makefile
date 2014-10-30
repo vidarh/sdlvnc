@@ -1,5 +1,5 @@
 
-CFLAGS=-g -I. -DDEBUG -m32 -Wall
+CFLAGS=-g -I. -DDEBUG -m32 -Wall -std=c11 -pedantic
 LDFLAGS=g -lSDL -lm -m32
 
 test: d3des.o SDL_vnc.o

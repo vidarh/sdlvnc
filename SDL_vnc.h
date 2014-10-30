@@ -12,6 +12,7 @@ Additions by B. Slawik, info at bernhardslawik dot de
 #define _SDL_vnc_h
 
 #include <math.h>
+#include <stdint.h>
 
 /* Set up for C function definitions, even when using C++ */
 #ifdef __cplusplus
@@ -205,7 +206,7 @@ char vncLastError[512];
 		// Variables below are accessed by the Thread
 		// and need to be mutex locked if accessed externally
 		
-		char *buffer;				// general IO buffer
+		unsigned char *buffer;				// general IO buffer
 		
 		char *clientbuffer;			// buffer for client-to-server data
 		int clientbufferpos;			// current position in buffer
