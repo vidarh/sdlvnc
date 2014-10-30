@@ -74,6 +74,16 @@ Butchered by Vidar Hokstad, vidar@hokstad.com
 	#define DBERROR 	printf(">>> Error: "); printf
 #endif
 
+#define CHECKED_READ(vnc, dest, len, message) { \
+    int result = Recv(vnc->socket, dest, len, 0); \
+    if (result!=len) { \
+    printf("Error reading %s. Got %i of %i bytes.\n", message, result, len); \
+    return 0; \
+    } \
+    }
+
+
+
 char *strdup(const char *s);
 
 int WaitForMessage(tSDL_vnc *vnc, unsigned int usecs)
@@ -260,6 +270,15 @@ static inline void vnc_to_sdl_rect(tSDL_vnc_rect * src, SDL_Rect * dest)
     dest->w = src->width;
     dest->h = src->height;
 }
+
+static inline void vnc_hextile_to_sdl_rect(uint8_t xy, uint8_t wh, SDL_Rect * dest)
+{
+    dest->x=(xy >> 4) & 0x0f;
+    dest->y=xy & 0x0f;
+    dest->w=((wh >> 4) & 0x0f)+1;
+    dest->h=(wh & 0x0f)+1;
+}
+
 
 static inline void vnc_rect_swap(tSDL_vnc_rect * rect)
 {
@@ -492,122 +511,83 @@ static int ServerRectangle_HexTile(tSDL_vnc * vnc,
                 bx = 16;
             }
             tSDL_vnc_serverHextile serverHextile;
-            int result = Recv(vnc->socket,&serverHextile,1,0);
-            if (result == 1) {
-                if (serverHextile.mode & 1) {
-                    // Read raw data for tile in lines
-                    int bytes_to_read = bx*by*4;
-                    if ((bx == 16) && (by == 16)) {
-                        // complete tile
-                        result = Recv(vnc->socket,(unsigned char *)vnc->tilebuffer->pixels,bytes_to_read,0);
-                    } else {
-                        // partial tile
-                        result = 0;
-                        unsigned char * target =(unsigned char *)vnc->tilebuffer->pixels;
-                        int rowindex=by;
-                        while (rowindex) {
-                            result += Recv(vnc->socket,target,bx*4,0);
-                            target += 16*4;
-                            rowindex--;
-                        }
-                    }
-                    if (result==bytes_to_read) {
-                        trec.x=hx;
-                        trec.y=hy;
-                        trec.w=16;
-                        trec.h=16;
-                        SDL_BlitSurface(vnc->tilebuffer, NULL, vnc->scratchbuffer, &trec);
-                    } else {
-                        DBERROR("Error on pixel data. Got %i of %i bytes.\n",result,bytes_to_read);
-                        return 0;
-                    }
+            CHECKED_READ(vnc, &serverHextile,1, "hextile header");
+
+            if (serverHextile.mode & 1) {
+                // Read raw data for tile in lines
+                int bytes_to_read = bx*by*4;
+                int result = 0;
+                if ((bx == 16) && (by == 16)) {
+                    // complete tile
+                    result = Recv(vnc->socket,(unsigned char *)vnc->tilebuffer->pixels,bytes_to_read,0);
                 } else {
-                    tSDL_vnc_serverHextileBg serverHextileBg;
-                    tSDL_vnc_serverHextileFg serverHextileFg;
-
-                    // no raw data
-                    if (serverHextile.mode & 2) {
-                        // Read background
-                        result = Recv(vnc->socket,&serverHextileBg,4,0);
-                        if (result!=4) {
-                            // All OK
-                        } else {
-                            DBERROR("Error on Hextile background. Got %i of %i bytes.\n",result,4);
-                            return 0;
-                        }
+                    // partial tile
+                    unsigned char * target =(unsigned char *)vnc->tilebuffer->pixels;
+                    int rowindex=by;
+                    while (rowindex) {
+                        result += Recv(vnc->socket,target,bx*4,0);
+                        target += 16*4;
+                        rowindex--;
                     }
-                    SDL_FillRect(vnc->tilebuffer,NULL,serverHextileBg.color);
-                    if (serverHextile.mode & 4) {
-                        // Read foreground
-                        result = Recv(vnc->socket,&serverHextileFg,4,0);
-                        if (result==4) {
-                            // All OK
-                        } else {
-                            DBERROR("Error on Hextile foreground. Got %i of %i bytes.\n",result,4);
-                            return 0;
-                        }
-                    }
-                    if (serverHextile.mode & 8) {
-                        tSDL_vnc_serverHextileSubrects serverHextileSubrects;
-                        result = Recv(vnc->socket,&serverHextileSubrects,1,0);
-                        if (result==1) {
-                            // All OK
-                        } else {
-                            DBERROR("Error on Hextile subrects. Got %i of %i bytes.\n",result,1);
-                            return 0;
-                        }
-                        // Read subrects
-                        int num_subrectangles=0;
-                        while (num_subrectangles<serverHextileSubrects.number) {
-                            num_subrectangles++;
-                            //
-                            // Check color mode
-                            if (serverHextile.mode & 16) {
-                                tSDL_vnc_serverHextileColored serverHextileColored;
-
-                                // Colored subrect
-                                result = Recv(vnc->socket,&serverHextileColored,6,0);
-                                if (result==6) {
-                                    // Render colored subrect
-                                    srec.x=(serverHextileColored.xy >> 4) & 0x0f;
-                                    srec.y=serverHextileColored.xy & 0x0f;
-                                    srec.w=((serverHextileColored.wh >> 4) & 0x0f)+1;
-                                    srec.h=(serverHextileColored.wh & 0x0f)+1;
-                                    SDL_FillRect(vnc->tilebuffer,&srec,serverHextileColored.color);
-                                } else {
-                                    DBERROR("Error on Hextile color subrect data. Got %i of %i bytes.\n",result,6);
-                                    return 0;
-                                }
-                            } else {
-                                tSDL_vnc_serverHextileRect serverHextileRect;
-                                // Non-colored Subrect
-                                result = Recv(vnc->socket,&serverHextileRect,2,0);
-                                if (result==2) {
-                                    // Render colored subrect
-                                    srec.x=(serverHextileRect.xy >> 4) & 0x0f;
-                                    srec.y=serverHextileRect.xy & 0x0f;
-                                    srec.w=((serverHextileRect.wh >> 4) & 0x0f)+1;
-                                    srec.h=(serverHextileRect.wh & 0x0f)+1;
-                                    SDL_FillRect(vnc->tilebuffer,&srec,serverHextileFg.color);
-                                } else {
-                                    DBERROR("Error on Hextile subrect data. Got %i of %i bytes.\n",result,2);
-                                    return 0;
-                                }
-																} // color mode check
-                        } // subrect loop
-                        //
-                    } // have subrects
-                    // Draw tile
-                    trec.x=hx;
-                    trec.y=hy;
-                    trec.w=16;
-                    trec.h=16;
-                    SDL_BlitSurface(vnc->tilebuffer, NULL, vnc->scratchbuffer, &trec);
-                } // raw data check
+                }
+                if (result !=bytes_to_read) {
+                    DBERROR("Error on pixel data. Got %i of %i bytes.\n",result,bytes_to_read);
+                    return 0;
+                }
+                trec.x=hx;
+                trec.y=hy;
+                trec.w=16;
+                trec.h=16;
+                SDL_BlitSurface(vnc->tilebuffer, NULL, vnc->scratchbuffer, &trec);
             } else {
-                DBERROR("Error on Hextile header. Got %i of %i bytes.\n",result,1);
-                return 0;
-            }
+                tSDL_vnc_serverHextileBg serverHextileBg;
+                tSDL_vnc_serverHextileFg serverHextileFg;
+                
+                // no raw data
+                if (serverHextile.mode & 2) {
+                    // Read background
+                    CHECKED_READ(vnc, &serverHextileBg, 4, "hextile background");
+                }
+                SDL_FillRect(vnc->tilebuffer,NULL,serverHextileBg.color);
+                if (serverHextile.mode & 4) {
+                    // Read foreground
+                    CHECKED_READ(vnc, &serverHextileFg, 4, "hextile foreground");
+                }
+                if (serverHextile.mode & 8) {
+                    tSDL_vnc_serverHextileSubrects serverHextileSubrects;
+                    CHECKED_READ(vnc, &serverHextileSubrects, 1, "hextile subrects");
+                    // Read subrects
+                    int num_subrectangles=0;
+                    while (num_subrectangles<serverHextileSubrects.number) {
+                        num_subrectangles++;
+                        //
+                        // Check color mode
+                        if (serverHextile.mode & 16) {
+                            tSDL_vnc_serverHextileColored serverHextileColored;
+                            
+                            // Colored subrect
+                            CHECKED_READ(vnc, &serverHextileColored,6, "hextile color subrect data");
+                            // Render colored subrect
+                            vnc_hextile_to_sdl_rect(serverHextileColored.xy, serverHextileColored.wh, &srec);
+                            SDL_FillRect(vnc->tilebuffer,&srec,serverHextileColored.color);
+                        } else {
+                            // Non-colored Subrect
+                            tSDL_vnc_serverHextileRect serverHextileRect;
+                            CHECKED_READ(vnc, &serverHextileRect, 2, "hextile subrect data");
+                                // Render colored subrect
+                            vnc_hextile_to_sdl_rect(serverHextileRect.xy, serverHextileRect.wh, &srec);
+                            SDL_FillRect(vnc->tilebuffer,&srec,serverHextileFg.color);
+                        } // color mode check
+                    } // subrect loop
+                    //
+                } // have subrects
+                // Draw tile
+                trec.x=hx;
+                trec.y=hy;
+                trec.w=16;
+                trec.h=16;
+                SDL_BlitSurface(vnc->tilebuffer, NULL, vnc->scratchbuffer, &trec);
+            } // raw data csheck
         } // hx loop
     } // hy loop
     //
@@ -685,62 +665,55 @@ static int HandleServerMessage_update(tSDL_vnc *vnc)
 {
     DBMESSAGE("Message: update\n");
 	tSDL_vnc_serverUpdate serverUpdate;
-    int result = Recv(vnc->socket,&serverUpdate,3,0);
-    if (result==3) {
+    CHECKED_READ(vnc, &serverUpdate, 3, "server update");
 
-        /* ??? Protocol sais U16, TightVNC server sends U8 */
-        serverUpdate.rectangles=serverUpdate.rectangles & 0x00ff;
-        DBMESSAGE("Number of rectangles: %u (%04x)\n",serverUpdate.rectangles,serverUpdate.rectangles);
+    /* ??? Protocol sais U16, TightVNC server sends U8 */
+    serverUpdate.rectangles=serverUpdate.rectangles & 0x00ff;
+    DBMESSAGE("Number of rectangles: %u (%04x)\n",serverUpdate.rectangles,serverUpdate.rectangles);
+    
+    int num_rectangles=0;
+    while (num_rectangles<serverUpdate.rectangles) {
+        num_rectangles++;
+        DBMESSAGE("Rectangle %i of %i:\n",num_rectangles,serverUpdate.rectangles);
+        tSDL_vnc_serverRectangle serverRectangle;
+        if (ReadServerRectangle(vnc, &serverRectangle) == 0) {
+            DBERROR("Read error on server rectangle.\n");
+            return 0;
+        }
+        if (PrepScratchBuffer(vnc, serverRectangle.rect) == 0) return 0;
         
-        int num_rectangles=0;
-        while (num_rectangles<serverUpdate.rectangles) {
-            num_rectangles++;
-            DBMESSAGE("Rectangle %i of %i:\n",num_rectangles,serverUpdate.rectangles);
-            tSDL_vnc_serverRectangle serverRectangle;
-            if (ReadServerRectangle(vnc, &serverRectangle)) {
-                if (PrepScratchBuffer(vnc, serverRectangle.rect) == 0) return 0;
-                
-                /* Rectangle Data */
-                switch (serverRectangle.encoding) {
-                case 0:
-                    if (ServerRectangle_Raw(vnc, serverRectangle.rect) == 0) return 0;
-                    break;
-                case 1:
-                    if (ServerRectangle_CopyRect(vnc, serverRectangle.rect) == 0) return 0;
-                    break;
-                case 2:
-                    if (ServerRectangle_RRE(vnc, serverRectangle) == 0) return 0;
-                    break;
-                case 4:
-                    if (ServerRectangle_CORRE(vnc, serverRectangle) == 0) return 0;
-                    break;
-                case 5:
-                    if (ServerRectangle_HexTile(vnc, serverRectangle.rect) == 0) return 0;
-                    break;
-                case 16:
-                    DBERROR("ZRLE encoding - ignored.\n");
-                    return 0;
-                    break;
-                    
-                case 0xffffff11:
-                    if (ServerRectangle_Cursor(vnc, serverRectangle) == 0) return 0;
-                    break;
-                    
-                case 0xffffff21:
-                    DBMESSAGE("DESKTOP pseudo-encoding (ignored).\n");
-                    break;
-                    
-                }
-            } else {
-                DBERROR("Read error on server rectangle. Got %i instead of %i.result,\n",result,12);
-                return 0;
-            } // Recv
+        /* Rectangle Data */
+        switch (serverRectangle.encoding) {
+        case 0:
+            if (ServerRectangle_Raw(vnc, serverRectangle.rect) == 0) return 0;
+            break;
+        case 1:
+            if (ServerRectangle_CopyRect(vnc, serverRectangle.rect) == 0) return 0;
+            break;
+        case 2:
+            if (ServerRectangle_RRE(vnc, serverRectangle) == 0) return 0;
+            break;
+        case 4:
+            if (ServerRectangle_CORRE(vnc, serverRectangle) == 0) return 0;
+            break;
+        case 5:
+            if (ServerRectangle_HexTile(vnc, serverRectangle.rect) == 0) return 0;
+                break;
+        case 16:
+            DBERROR("ZRLE encoding - ignored.\n");
+            return 0;
+            break;
             
-        } // while
-    } else {
-        DBERROR("Read error on server update. Got %i instead of %i.\n",result,3);
-        return 0;
-    }
+        case 0xffffff11:
+            if (ServerRectangle_Cursor(vnc, serverRectangle) == 0) return 0;
+            break;
+            
+        case 0xffffff21:
+            DBMESSAGE("DESKTOP pseudo-encoding (ignored).\n");
+            break;
+            
+        }
+    } // while
     return 1;
 }
 

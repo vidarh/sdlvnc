@@ -1,9 +1,9 @@
-
-CFLAGS=-g -I. -DDEBUG -m32 -Wall -std=c11 -pedantic
-LDFLAGS=g -lSDL -lm -m32
+#ARCH=-m32
+CFLAGS=-g -I. -DDEBUG -Wall -std=c11 -pedantic $(ARCH)
+LDFLAGS=g -lSDL -lm $(ARCH)
 
 test: d3des.o SDL_vnc.o
-	gcc -m32 -g -o test SDL_vnc.o d3des.o -I . -lSDL -lm  Test/TestVNC.c
+	gcc -g -o test SDL_vnc.o d3des.o -I . -lSDL -lm  Test/TestVNC.c $(ARCH)
 
 d3des.o: d3des.c
 
