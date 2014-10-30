@@ -46,39 +46,45 @@ char vncLastError[512];
 
 	/* ---- VNC Protocol Structures */
 
+    /* ---- helpers */
+    typedef struct tSDL_vnc_rect {
+        uint16_t x;
+        uint16_t y;
+        uint16_t width;
+        uint16_t height;
+    } tSDL_vnc_rect;
+
+
 	/* ---- connection messages */
 
 	typedef struct tSDL_vnc_pixelFormat {
-		unsigned char bpp;
-		unsigned char depth;
-		unsigned char bigendian;
-		unsigned char truecolor;
-		unsigned short redmax;
-		unsigned short greenmax;
-		unsigned short bluemax;
-		unsigned char redshift;
-		unsigned char greenshift;
-		unsigned char blueshift;
-		unsigned char padding[3];
+		uint8_t bpp;
+	    uint8_t depth;
+		uint8_t bigendian;
+		uint8_t truecolor;
+		uint16_t redmax;
+		uint16_t greenmax;
+		uint16_t bluemax;
+		uint8_t redshift;
+		uint8_t greenshift;
+		uint8_t blueshift;
+		uint8_t padding[3];
 	} tSDL_vnc_pixelFormat;
 	
 	typedef struct tSDL_vnc_serverFormat {
-		unsigned short width;
-		unsigned short height;
+		uint16_t width;
+		uint16_t height;
 		tSDL_vnc_pixelFormat pixel_format;
-		unsigned int namelength;
-		char name[VNC_BUFSIZE];
+		uint32_t namelength;
+		uint8_t name[VNC_BUFSIZE];
 	} tSDL_vnc_serverFormat;
 
 	/* --- server messages --- */
 
 	typedef struct tSDL_vnc_updateRequest {
-		unsigned char messagetype;
-		unsigned char incremental;
-		unsigned short x;
-		unsigned short y;
-		unsigned short w;
-		unsigned short h;        
+		uint8_t messagetype;
+		uint8_t incremental;
+        tSDL_vnc_rect rect;
 	} tSDL_vnc_updateRequest;
 
 	typedef struct tSDL_vnc_serverMessage {
@@ -91,10 +97,7 @@ char vncLastError[512];
 	} tSDL_vnc_serverUpdate;
 
 	typedef struct tSDL_vnc_serverRectangle {
-		unsigned short x;
-		unsigned short y;
-		unsigned short width;
-		unsigned short height;
+        tSDL_vnc_rect rect;
 		unsigned int encoding;
 	} tSDL_vnc_serverRectangle;
 
@@ -120,11 +123,8 @@ char vncLastError[512];
 	} tSDL_vnc_serverRRE;
 
 	typedef struct tSDL_vnc_serverRREdata {
-		unsigned int color;
-		unsigned short x;
-		unsigned short y;
-		unsigned short width;
-		unsigned short height;
+		uint32_t color;
+        tSDL_vnc_rect rect;
 	} tSDL_vnc_serverRREdata;
 
 	typedef struct tSDL_vnc_serverCoRRE {
@@ -134,10 +134,7 @@ char vncLastError[512];
 
 	typedef struct tSDL_vnc_serverCoRREdata {
 		unsigned int color;
-		unsigned char x;
-		unsigned char y;
-		unsigned char width;
-		unsigned char height;
+        tSDL_vnc_rect rect;
 	} tSDL_vnc_serverCoRREdata;
 
 	typedef struct tSDL_vnc_serverHextile {
