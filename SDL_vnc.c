@@ -4,6 +4,7 @@ SDL_vnc.c - VNC client implementation
 
 LGPL (c) A. Schiffler, aschiffler at ferzkopp dot net
 Additions by B. Slawik, info at bernhardslawik dot de
+Butchered by Vidar Hokstad, vidar@hokstad.com
 
 */
 
@@ -297,10 +298,12 @@ static int ServerRectangle_CopyRect(tSDL_vnc * vnc,
         srec.y=serverCopyrect.y;
         srec.w=serverRectangle.width;
         srec.h=serverRectangle.height;
+
         trec.x=serverRectangle.x;
         trec.y=serverRectangle.y;
         trec.w=serverRectangle.width;
         trec.h=serverRectangle.height;
+
         SDL_LockMutex(vnc->mutex);
         SDL_BlitSurface(vnc->framebuffer, &srec, vnc->scratchbuffer, NULL);
         SDL_BlitSurface(vnc->scratchbuffer, NULL, vnc->framebuffer, &trec);
@@ -412,14 +415,7 @@ static int ServerRectangle_RRE(tSDL_vnc * vnc,
             }
         }
         DBMESSAGE("Drawn %i subrectangles.\n", num_subrectangles);
-        trec.x=serverRectangle.x;
-        trec.y=serverRectangle.y;
-        trec.w=serverRectangle.width;
-        trec.h=serverRectangle.height;
-        SDL_LockMutex(vnc->mutex);
-        SDL_BlitSurface(vnc->scratchbuffer, NULL, vnc->framebuffer, &trec);
-        GrowUpdateRegion(vnc,&trec);
-        SDL_UnlockMutex(vnc->mutex);
+        blit_scratch(vnc, serverRectangle);
         DBMESSAGE("Blitted RRE pixels.\n");
     } else {
         DBERROR("Error on RRE header. Got %i of %i bytes.\n",result,8);
@@ -686,127 +682,141 @@ static int PrepScratchBuffer(tSDL_vnc *vnc,
 }
 
 
+static int HandleServerMessage_update(tSDL_vnc *vnc)
+{
+    DBMESSAGE("Message: update\n");
+	tSDL_vnc_serverUpdate serverUpdate;
+    int result = Recv(vnc->socket,&serverUpdate,3,0);
+    if (result==3) {
+
+        /* ??? Protocol sais U16, TightVNC server sends U8 */
+        serverUpdate.rectangles=serverUpdate.rectangles & 0x00ff;
+        DBMESSAGE("Number of rectangles: %u (%04x)\n",serverUpdate.rectangles,serverUpdate.rectangles);
+        
+        int num_rectangles=0;
+        while (num_rectangles<serverUpdate.rectangles) {
+            num_rectangles++;
+            DBMESSAGE("Rectangle %i of %i:\n",num_rectangles,serverUpdate.rectangles);
+            tSDL_vnc_serverRectangle serverRectangle;
+            if (ReadServerRectangle(vnc, &serverRectangle)) {
+                if (PrepScratchBuffer(vnc, serverRectangle) == 0) return 0;
+                
+                /* Rectangle Data */
+                switch (serverRectangle.encoding) {
+                case 0:
+                    if (ServerRectangle_Raw(vnc, serverRectangle) == 0) return 0;
+                    break;
+                case 1:
+                    if (ServerRectangle_CopyRect(vnc, serverRectangle) == 0) return 0;
+                    break;
+                case 2:
+                    if (ServerRectangle_RRE(vnc, serverRectangle) == 0) return 0;
+                    break;
+                case 4:
+                    if (ServerRectangle_CORRE(vnc, serverRectangle) == 0) return 0;
+                    break;
+                case 5:
+                    if (ServerRectangle_HexTile(vnc, serverRectangle) == 0) return 0;
+                    break;
+                case 16:
+                    DBERROR("ZRLE encoding - ignored.\n");
+                    return 0;
+                    break;
+                    
+                case 0xffffff11:
+                    if (ServerRectangle_Cursor(vnc, serverRectangle) == 0) return 0;
+                    break;
+                    
+                case 0xffffff21:
+                    DBMESSAGE("DESKTOP pseudo-encoding (ignored).\n");
+                    break;
+                    
+                }
+            } else {
+                DBERROR("Read error on server rectangle. Got %i instead of %i.result,\n",result,12);
+                return 0;
+            } // Recv
+            
+        } // while
+    } else {
+        DBERROR("Read error on server update. Got %i instead of %i.\n",result,3);
+        return 0;
+    }
+    return 1;
+}
+
+
+
+
+static int HandleServerMessage_text(tSDL_vnc *vnc) 
+{
+    DBMESSAGE("Message: text\n");
+	tSDL_vnc_serverText serverText;
+
+    int result = Recv(vnc->socket,&serverText,5,0);
+    if (result!=5) {
+        DBERROR("Read error on server text. Got %i instead of %i.\n",result,5);
+        return 0;
+    }
+
+    serverText.length=swap_32(serverText.length);
+
+    DBMESSAGE("Server text length: %u\n",serverText.length);
+    // ??? Protocol sais U16 is length to read
+    // TightVNC server sends a byte on empty string
+    if (serverText.length==0) {
+            serverText.length=1;
+    }
+    while (serverText.length>0) {
+        result = Recv(vnc->socket,vnc->buffer,serverText.length % VNC_BUFSIZE,0);
+        if (result <= 0) {
+            serverText.length=0;
+        } else {
+                DBMESSAGE("Read %i bytes of text.\n",result);
+                serverText.length -= result;
+        }
+    }
+    return 0;
+}
+
+
+
 static int HandleServerMessage(tSDL_vnc *vnc)
 {
 	int num_rectangles;
 	tSDL_vnc_serverMessage serverMessage;
-	tSDL_vnc_serverUpdate serverUpdate;
-	tSDL_vnc_serverRectangle serverRectangle;
-	tSDL_vnc_serverText serverText;
 
 	DBMESSAGE("HandleServerMessage\n");
 	// Read message type
 	int result = Recv(vnc->socket,&serverMessage,1,0);
-	if (result==1) {
-		switch (serverMessage.messagetype) {
-
-			case 0:
-				DBMESSAGE("Message: update\n");
-				result = Recv(vnc->socket,&serverUpdate,3,0);
-				if (result==3) {
-
-					/* ??? Protocol sais U16, TightVNC server sends U8 */
-					serverUpdate.rectangles=serverUpdate.rectangles & 0x00ff;
-					DBMESSAGE("Number of rectangles: %u (%04x)\n",serverUpdate.rectangles,serverUpdate.rectangles);
-
-					num_rectangles=0;
-					while (num_rectangles<serverUpdate.rectangles) {
-						num_rectangles++;
-                        DBMESSAGE("Rectangle %i of %i:\n",num_rectangles,serverUpdate.rectangles);
-                        if (ReadServerRectangle(vnc, &serverRectangle)) {
-                            if (PrepScratchBuffer(vnc, serverRectangle) == 0) return 0;
-
-							/* Rectangle Data */
-							switch (serverRectangle.encoding) {
-                            case 0:
-                                if (ServerRectangle_Raw(vnc, serverRectangle) == 0) return 0;
-                                break;
-                            case 1:
-                                if (ServerRectangle_CopyRect(vnc, serverRectangle) == 0) return 0;
-                                break;
-                            case 2:
-                                if (ServerRectangle_RRE(vnc, serverRectangle) == 0) return 0;
-                                break;
-                            case 4:
-                                if (ServerRectangle_CORRE(vnc, serverRectangle) == 0) return 0;
-                                break;
-                            case 5:
-                                if (ServerRectangle_HexTile(vnc, serverRectangle) == 0) return 0;
-                                break;
-                            case 16:
-                                DBERROR("ZRLE encoding - ignored.\n");
-                                return 0;
-                                break;
-
-                            case 0xffffff11:
-                                if (ServerRectangle_Cursor(vnc, serverRectangle) == 0) return 0;
-                                break;
-                                
-                            case 0xffffff21:
-                                DBMESSAGE("DESKTOP pseudo-encoding (ignored).\n");
-                                break;
-
-							}
-						} else {
-							DBERROR("Read error on server rectangle. Got %i instead of %i.result,\n",result,12);
-							return 0;
-						} // Recv
-
-					} // while
-				} else {
-					DBERROR("Read error on server update. Got %i instead of %i.\n",result,3);
-					return 0;
-				}
-				break;
-
-			case 1:
-                if (HandleServerMessage_colormap(vnc) == 0) return 0;
-				break;
-
-			case 2:
-				DBMESSAGE("Message: bell - ignored\n");
-				// we are done reading
-				break;
-
-			case 3:
-				DBMESSAGE("Message: text\n");
-				// Read data, but ignore it
-				result = Recv(vnc->socket,&serverText,5,0);
-				if (result==5) {
-					serverText.length=swap_32(serverText.length);
-					//
-					DBMESSAGE("Server text length: %u\n",serverText.length);
-					//
-					// ??? Protocol sais U16 is length to read
-					// TightVNC server sends a byte on empty string
-					if (serverText.length==0) {
-						serverText.length=1;
-					}
-					while (serverText.length>0) {
-						result = Recv(vnc->socket,vnc->buffer,serverText.length % VNC_BUFSIZE,0);
-						if (result <= 0) {
-							serverText.length=0;
-						} else {
-							DBMESSAGE("Read %i bytes of text.\n",result);
-							serverText.length -= result;
-						}
-					}
-				} else {
-					DBERROR("Read error on server text. Got %i instead of %i.\n",result,5);
-					return 0;
-				}
-				break;
-
-				default:
-					DBERROR("Unknown message error: message=%u\n",serverMessage.messagetype);
-					return 0;
-					break;
-		} // switch messagetype
-
-	} else {
+	if (result!=1) {
 		DBMESSAGE("Read error on server message.\n");
 		return 0;
-	}
+    }
+
+    switch (serverMessage.messagetype) {
+    case 0:
+        if (HandleServerMessage_update(vnc) == 0) return 0;
+        break;
+
+    case 1:
+        if (HandleServerMessage_colormap(vnc) == 0) return 0;
+        break;
+
+    case 2:
+        DBMESSAGE("Message: bell - ignored\n");
+        // we are done reading
+        break;
+
+    case 3:
+        if (HandleServerMessage_text(vnc) == 0) return 0;
+        break;
+        
+    default:
+        DBERROR("Unknown message error: message=%u\n",serverMessage.messagetype);
+        return 0;
+        break;
+    } // switch messagetype
 
 	return 1;
 }
@@ -1124,9 +1134,9 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 			pixel_format.redmax=swap_16(255);
 			pixel_format.greenmax=swap_16(255);
 			pixel_format.bluemax=swap_16(255);
-			pixel_format.redshift=16; // FIXME: Was 0; didn't work on my setup. WHy?
+			pixel_format.redshift=16; // Was 0, which doesn't match vnc->rmask
 			pixel_format.greenshift=8;
-			pixel_format.blueshift=0; // FIXME: Was 16; see above
+			pixel_format.blueshift=0; // Was 16, which doesn't match vnc->bmask
 			memcpy((void *)&vnc->buffer[4],(void *)&pixel_format,16);
 			result = send(vnc->socket,vnc->buffer,20,0);
 			if (result == 20) {
@@ -1218,14 +1228,6 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 				// Pre
 				DBMESSAGE("Client is: little-endian\n");
 				//@FIXME: Strange... Palm Pre needs reversed R <-> B order! Maybe check "if(SDL_BYTEORDER == SDL_LIL_ENDIAN)"
-				/*
-				// This would make sense:
-				vnc->rmask = 0x000000ff;
-				vnc->gmask = 0x0000ff00;
-				vnc->bmask = 0x00ff0000;
-				vnc->amask = 0xff000000;
-				*/
-				// Palm Pre little endian
 				vnc->rmask = 0x00ff0000;
 				vnc->gmask = 0x0000ff00;
 				vnc->bmask = 0x000000ff;
