@@ -118,8 +118,8 @@ char vncLastError[512];
 	} tSDL_vnc_serverCopyrect;
 
 	typedef struct tSDL_vnc_serverRRE {
-        uint16_t number;
-        uint16_t background;
+        uint32_t number;
+        uint32_t background;
 	} tSDL_vnc_serverRRE;
 
 	typedef struct tSDL_vnc_serverRREdata {
