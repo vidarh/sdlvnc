@@ -88,12 +88,12 @@ char vncLastError[512];
 	} tSDL_vnc_updateRequest;
 
 	typedef struct tSDL_vnc_serverMessage {
-		unsigned char messagetype;
+		uint8_t messagetype;
 	} tSDL_vnc_serverMessage;
 
 	typedef struct tSDL_vnc_serverUpdate {
-		unsigned char padding;
-		unsigned short rectangles;
+		uint8_t padding;
+		uint16_t rectangles;
 	} tSDL_vnc_serverUpdate;
 
 	typedef struct tSDL_vnc_serverRectangle {
@@ -102,24 +102,24 @@ char vncLastError[512];
 	} tSDL_vnc_serverRectangle;
 
 	typedef struct tSDL_vnc_serverColormap {
-		unsigned char padding;
-		unsigned short first;
-		unsigned short number;
+		uint8_t padding;
+		uint16_t first;
+	    uint16_t number;
 	} tSDL_vnc_serverColormap;
 
 	typedef struct tSDL_vnc_serverText {
-		unsigned char padding[3];
-		unsigned int length;
+		uint8_t padding[3];
+		uint32_t length;
 	} tSDL_vnc_serverText;
 
 	typedef struct tSDL_vnc_serverCopyrect {
-		unsigned short x;
-		unsigned short y;
+	    uint16_t x;
+        uint16_t y;
 	} tSDL_vnc_serverCopyrect;
 
 	typedef struct tSDL_vnc_serverRRE {
-		unsigned int number;
-		unsigned int background;
+        uint16_t number;
+        uint16_t background;
 	} tSDL_vnc_serverRRE;
 
 	typedef struct tSDL_vnc_serverRREdata {
@@ -128,56 +128,56 @@ char vncLastError[512];
 	} tSDL_vnc_serverRREdata;
 
 	typedef struct tSDL_vnc_serverCoRRE {
-		unsigned int number;
-		unsigned int background;
+		uint32_t number;
+		uint32_t background;
 	} tSDL_vnc_serverCoRRE;
 
 	typedef struct tSDL_vnc_serverCoRREdata {
-		unsigned int color;
+        uint32_t color;
         tSDL_vnc_rect rect;
 	} tSDL_vnc_serverCoRREdata;
 
 	typedef struct tSDL_vnc_serverHextile {
-		unsigned char mode;
+		uint8_t mode;
 	} tSDL_vnc_serverHextile;
 
 	typedef struct tSDL_vnc_serverHextileBg {
-		unsigned int color;
+		uint32_t color;
 	} tSDL_vnc_serverHextileBg;
 
 	typedef struct tSDL_vnc_serverHextileFg {
-		unsigned int color;
+        uint32_t color;
 	} tSDL_vnc_serverHextileFg;
 
 	typedef struct tSDL_vnc_serverHextileSubrects {
-		unsigned char number;
+		uint8_t number;
 	} tSDL_vnc_serverHextileSubrects;
 
 	typedef struct tSDL_vnc_serverHextileColored {
-		unsigned int color;
-		unsigned char xy;
-		unsigned char wh;
+		uint32_t color;
+		uint8_t xy;
+		uint8_t wh;
 	} tSDL_vnc_serverHextileColored;
 
 	typedef struct tSDL_vnc_serverHextileRect {
-		unsigned char xy;
-		unsigned char wh;
+		uint8_t xy;
+		uint8_t wh;
 	} tSDL_vnc_serverHextileRect;
 
 	/* ---- client messages ---- */
 
 	typedef struct tSDL_vnc_clientKeyevent {
-		unsigned char messagetype;
-		unsigned char downflag;
-		unsigned char padding[2];
-		unsigned int  key;
+		uint8_t messagetype;
+		uint8_t downflag;
+		uint8_t padding[2];
+		uint32_t  key;
 	} tSDL_vnc_clientKeyevent;
 
 	typedef struct tSDL_vnc_clientPointerevent {
-		unsigned char messagetype;
-		unsigned char buttonmask;
-		unsigned short x;
-		unsigned short y;
+		uint8_t messagetype;
+		uint8_t buttonmask;
+		uint16_t x;
+		uint16_t y;
 	} tSDL_vnc_clientPointerevent;
 	
 	/* ---- main SDL_vnc structure ---- */
