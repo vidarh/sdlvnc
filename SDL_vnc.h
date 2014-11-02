@@ -204,6 +204,8 @@ char vncLastError[512];
 		SDL_Surface *framebuffer;		// RGB surface of framebuffer
 		SDL_Surface *scratchbuffer;		// workbuffer for encodings
 		SDL_Surface *tilebuffer;		// workbuffer for encodings
+
+        uint32_t * rawbuffer;           // Raw pixel buffer. To replace scratchbuffer
 		
 		int gotcursor;				// flag indicating that the cursor was updated
 		SDL_Surface *cursorbuffer;		// RGBA surface of cursor (fixed at 32x32)
