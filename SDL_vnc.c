@@ -81,8 +81,9 @@ void blit_raw(tSDL_vnc * vnc, tSDL_vnc_rect rect);
 	#define DBERROR 	printf(">>> Error: "); printf
 #endif
 
-#define MAX(a,b) (a > b ? a : b)
-#define MIN(a,b) (a < b ? a : b)
+#define MAX(a,b) (((a) > (b)) ? (a) : (b))
+#define MIN(a,b) (((a) < (b)) ? (a) : (b))
+#define ARRSIZE(a) (sizeof(a)/sizeof(a[0]))
 
 #define CHECKED_READ(vnc, dest, len, message) { \
     int result = Recv(vnc->socket, dest, len, 0); \
@@ -823,28 +824,15 @@ static int vncReadServerFormat(tSDL_vnc *vnc) {
     return 1;
 }
 
-
-int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, int framerate) {
-	struct sockaddr_in address;
-	int result;
-	unsigned char *curpos, *newpos, *modestring;
-	unsigned int security_result;
-	unsigned char security_key[8];
-	unsigned char security_challenge[16];
-	unsigned char security_response[16];
-	tSDL_vnc_pixelFormat pixel_format;
-	struct hostent *he;
-	struct in_addr **addr_list;
-	int i = -1;
-
+static int initVNC(tSDL_vnc *vnc, int framerate) {
 	// Initialize variables
-	vnc->buffer=(unsigned char *)malloc(VNC_BUFSIZE);
-	if (!vnc->buffer) {
+	if (!(vnc->buffer = calloc(VNC_BUFSIZE, 1))) {
 		DBERROR("Out of memory allocating workbuffer.\n");
 		return 0;
 	}
-	vnc->clientbuffer=(char *)malloc(VNC_BUFSIZE);
-	if (!vnc->clientbuffer) {
+
+	if (!(vnc->clientbuffer = calloc(VNC_BUFSIZE, 1))) {
+		free(vnc->buffer);
 		DBERROR("Out of memory allocating clientbuffer.\n");
 		return 0;
 	}
@@ -853,8 +841,13 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 	vnc->tilebuffer=NULL;
 	vnc->cursorbuffer=NULL;
 
-    DBMESSAGE("Allocating %ld bytes for rawbuffer\n", RAWBUFFER_WIDTH * 4 * RAWBUFFER_HEIGHT);
-    vnc->rawbuffer = malloc(RAWBUFFER_WIDTH * 4 * RAWBUFFER_HEIGHT);
+	DBMESSAGE("Allocating %ld bytes for rawbuffer\n", RAWBUFFER_WIDTH * 4 * RAWBUFFER_HEIGHT);
+	if(!(vnc->rawbuffer = malloc(RAWBUFFER_WIDTH * 4 * RAWBUFFER_HEIGHT))) {
+		free(vnc->clientbuffer);
+		free(vnc->buffer);
+		DBERROR("Out of memory allocating rawbuffer.\n");
+		return 0;
+	}
 
 	vnc->fbupdated=0;
 	vnc->gotcursor=0;
@@ -872,310 +865,403 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 		vnc->framerate=framerate;
 	}
 
+	return 1;
+}
+
+static int connectSocket(char *host, int port) {
+	struct sockaddr_in address;
+	struct hostent *he;
+	struct in_addr **addr_list;
+	int sock;
 	// Connect
 	DBMESSAGE("Creating socket...");
-	if ((vnc->socket = socket(AF_INET,SOCK_STREAM,0)) > 0) {
-		DBMESSAGE("Converting address...\n");
-		address.sin_family = AF_INET;
-		address.sin_port = htons(port);
-		if (inet_pton(AF_INET,host,&address.sin_addr) != 1) {
-			DBMESSAGE("Given IP [%s] could not be parsed. Trying to resolve it as a hostname...\n", host);
-			
-			// Resolve
-			if ((he = gethostbyname(host)) == NULL) {  // get the host info
-				DBERROR("Error: gethostbyname has had a bad day...\n");
-				return 0;
-			}
-			//DBMESSAGE("Official name is: %s\n", he->h_name);
-			DBMESSAGE("IP addresses: ");
-			addr_list = (struct in_addr **)he->h_addr_list;
-			i = -1;
+	if ((sock = socket(AF_INET,SOCK_STREAM,0)) == -1) {
+		DBERROR("Could not create socket.\n");
+		return -1;
+	}
+	DBMESSAGE("Converting address...\n");
+	address.sin_family = AF_INET;
+	address.sin_port = htons(port);
+	if (inet_pton(AF_INET,host,&address.sin_addr) != 1) {
+		DBMESSAGE("Given IP [%s] could not be parsed. Trying to resolve it as a hostname...\n", host);
+
+		// Resolve
+		if ((he = gethostbyname(host)) == NULL) {  // get the host info
+			DBERROR("Error: gethostbyname has had a bad day...\n");
+			return -1;
+		}
+		//DBMESSAGE("Official name is: %s\n", he->h_name);
+		DBMESSAGE("IP addresses: ");
+		addr_list = (struct in_addr **)he->h_addr_list;
+		{
+			int i;
 			for (i = 0; addr_list[i] != NULL; i++) {
 				DBMESSAGE("[%s] ", inet_ntoa(*addr_list[i]));
 			}
 			DBMESSAGE("\n");
-			if (i == -1) {
+			if (i == 0) {
 				DBERROR("Error: No applicable IP found.\n");
-				return 0;
+				return -1;
 			} else {
 				address.sin_addr = *addr_list[0];
-			}			
+			}
 		}
+	}
 
-		// Connect to server
-		DBMESSAGE("Connecting socket...");
-		if (connect(vnc->socket,(struct sockaddr *)&address,sizeof(address)) == 0) {
-			DBMESSAGE("The connection was accepted with the server %s...\n",inet_ntoa(address.sin_addr));
-			
-			// Server startup
-			
-			// Version handshaking
-			result = Recv(vnc->socket,vnc->buffer,12,0);
-			if (result==12) {
-				vnc->buffer[12]=0;
-				DBMESSAGE("Server Version: %s",vnc->buffer);
-			} else {
-				DBERROR("Read error on server version.\n");
-				return 0;
-			}
-			
-			// Check major version 3
-			if (vnc->buffer[6]=='3') {
-				vnc->versionMajor = 3;
-				vnc->versionMinor = vnc->buffer[10]-'0';
-				DBMESSAGE("3.x, Minor Version: %i\n",vnc->versionMinor);
-			} else {
-				DBERROR("Major version mismatch. Expected 3.\n");
-				return 0;
-			}
-			
-			// Send same version back
-			result = send(vnc->socket,vnc->buffer,12,0);
-			if (result==12) {
-				DBMESSAGE("Requested Version (clone): %s",vnc->buffer);
-			} else {
-				DBERROR("Write error on version echo.\n");
-				return 0;
-			}
-			
-            if (read_security_type(vnc) == 0) return 0;
+	// Connect to server
+	DBMESSAGE("Connecting socket...");
+	if (connect(sock,(struct sockaddr *)&address,sizeof(address)) == -1) {
+		DBERROR("Could not connect to server %s:%i\n",host,port);
+		return -1;
+	}
+	DBMESSAGE("The connection was accepted with the server %s...\n",inet_ntoa(address.sin_addr));
 
-			// Check type
-			if ((vnc->security_type < 1) || (vnc->security_type > 2)) {
-				DBERROR("Security: Invalid.\n");
-				return 0;
-			}
-			if (vnc->security_type == 1) {
-				DBMESSAGE("Security: None.\n");
-			}
-			if (vnc->security_type == 2) {
-				DBMESSAGE("Security: VNC Authentication\n");
-				
-				// Security Handshaking
-				result = Recv(vnc->socket,&security_challenge,16,0);
-				if (result==16) {
-					DBMESSAGE("Security Challenge: received\n");
-				} else {
-					DBERROR("Read error on security handshaking.\n");
-					return 0;
-				}
-				
-				// Calculate response
-				memset((char *)security_key,0,8);
-				strncpy((char *)security_key,password,8);
-				deskey(security_key,EN0);
-				des(security_challenge,security_response);
-				des(&security_challenge[8],&security_response[8]);
-				
-				// Send response
-				result = send(vnc->socket,(char *)security_response,16,0);
-				if (result==16) {
-					DBMESSAGE("Security Response: sent\n");
-				} else {
-					DBERROR("Write error on security response.\n");
-					return 0;
-				}
-				
-				// Security Result
-				result = Recv(vnc->socket,vnc->buffer,4,0);
-				if (result==4) {
-					security_result=vnc->buffer[0];
-					DBMESSAGE("Security Result: %i\n",security_result);
-				} else {
-					DBERROR("Read error on security result.\n");
-					return 0;
-				}
-				
-				DBMESSAGE("Security Result: %i", security_result);
-				
-				// Check result
-				if (security_result==1) {
-					DBERROR("Could not authenticate\n");
-					return 0;
-				}
-				
-			}
-			
-			// Send Client Initialization
-			vnc->buffer[0]=1;
-			result = send(vnc->socket,vnc->buffer,1,0);
-			if (result==1) {
-				DBMESSAGE("Client Initialization: shared\n");
-			} else {
-				DBERROR("Write error on client initialization.\n");
-				return 0;
-			}
-			
-            if (vncReadServerFormat(vnc) == 0) return 0;
+	return sock;
+}
 
-			// Set pixel format
-			memset(vnc->buffer,0,20);
-			vnc->buffer[0]=0;
-			pixel_format.bpp=32;
-			pixel_format.depth=32;
-			pixel_format.bigendian=0;
-			pixel_format.truecolor=1;
-			pixel_format.redmax=swap_16(255);
-			pixel_format.greenmax=swap_16(255);
-			pixel_format.bluemax=swap_16(255);
+static int handshakeVersion(tSDL_vnc *vnc) {
+	int sent, recvd;
 
-            /* FIXME: These depends on endianness; current values below works for
-               little endian */
-			pixel_format.redshift=16; // Was 0, which doesn't match vnc->rmask
-			pixel_format.greenshift=8;
-			pixel_format.blueshift=0; // Was 16, which doesn't match vnc->bmask
-			memcpy((void *)&vnc->buffer[4],(void *)&pixel_format,16);
-			result = send(vnc->socket,vnc->buffer,20,0);
-			if (result == 20) {
-				DBMESSAGE("Pixel format set.\n");
-			} else {
-				DBERROR("Error setting pixel format.\n");
-				return(0);
-			}
-
-			// Set encodings
-			memset(vnc->buffer,0,VNC_BUFSIZE);
-			vnc->buffer[0]=2; // message type
-			// Count number of encodings
-			vnc->buffer[3]=0; // number of encodings
-			modestring=(unsigned char *)strdup(mode);
-			curpos=modestring;
-			while ((curpos) && (*curpos)) {
-				if (strncasecmp((const char *)curpos,"raw",3)==0) {
-					DBMESSAGE("Requesting mode: RAW\n");
-					vnc->buffer[3]++;
-					vnc->buffer[3+4*vnc->buffer[3]]=0;
-				} else
-				if (strncasecmp((const char *)curpos,"copyrect",8)==0) {
-					DBMESSAGE("Requesting mode: COPYRECT\n");
-					vnc->buffer[3]++;
-					vnc->buffer[3+4*vnc->buffer[3]]=1;
-				} else
-				if (strncasecmp((const char *)curpos,"rre",3)==0) {
-					DBMESSAGE("Requesting mode: RRE\n");
-					vnc->buffer[3]++;
-					vnc->buffer[3+4*vnc->buffer[3]]=2;
-				} else
-				if (strncasecmp((const char *)curpos,"hextile",7)==0) {
-					DBMESSAGE("Requesting mode: HEXTILE\n");
-					vnc->buffer[3]++;
-					vnc->buffer[3+4*vnc->buffer[3]]=5;
-				} else
-				if (strncasecmp((const char *)curpos,"zrle",4)==0) {
-					DBMESSAGE("Requesting mode: ZRLE\n");
-					vnc->buffer[3]++;
-					vnc->buffer[3+4*vnc->buffer[3]]=16;
-				} else
-				if (strncasecmp((const char *)curpos,"cursor",6)==0) {
-					DBMESSAGE("Requesting pseudoencoding: CURSOR\n");
-					vnc->buffer[3]++;
-					vnc->buffer[0+4*vnc->buffer[3]]=0xff;
-					vnc->buffer[1+4*vnc->buffer[3]]=0xff;
-					vnc->buffer[2+4*vnc->buffer[3]]=0xff;
-					vnc->buffer[3+4*vnc->buffer[3]]=0x11;
-				} else
-				if (strncasecmp((const char *)curpos,"desktop",7)==0) {
-					DBMESSAGE("Requesting pseudoencoding: DESKTOP\n");
-					vnc->buffer[3]++;
-					vnc->buffer[0+4*vnc->buffer[3]]=0xff;
-					vnc->buffer[1+4*vnc->buffer[3]]=0xff;
-					vnc->buffer[2+4*vnc->buffer[3]]=0xff;
-					vnc->buffer[3+4*vnc->buffer[3]]=0x21;
-				} else {
-					DBERROR("Unknown mode.\n");
-				}
-				if ((newpos=(unsigned char *)strstr((const char *)curpos,","))) {
-					curpos=newpos+1;
-				} else {
-					*curpos=0;
-				}
-			}
-			if (modestring) free(modestring);
-			result = send(vnc->socket,vnc->buffer,4+4*vnc->buffer[3],0);
-			if (result==(4+4*vnc->buffer[3])) {
-				DBMESSAGE("Mode request: send\n");
-			} else {
-				DBERROR("Write error on mode request.\n");
-				return 0;
-			}
-
-			// Create framebuffer
-			#if SDL_BYTEORDER == SDL_BIG_ENDIAN
-				DBMESSAGE("Client is: big-endian\n");
-				vnc->rmask = 0xff000000;
-				vnc->gmask = 0x00ff0000;
-				vnc->bmask = 0x0000ff00;
-				vnc->amask = 0x000000ff;
-			#else
-				// Pre
-				DBMESSAGE("Client is: little-endian\n");
-				//@FIXME: Strange... Palm Pre needs reversed R <-> B order! Maybe check "if(SDL_BYTEORDER == SDL_LIL_ENDIAN)"
-				vnc->rmask = 0x00ff0000;
-				vnc->gmask = 0x0000ff00;
-				vnc->bmask = 0x000000ff;
-				vnc->amask = 0xff000000;
-
-			#endif
-			vnc->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,vnc->serverFormat.width,vnc->serverFormat.height,32,vnc->rmask,vnc->gmask,vnc->bmask,0);
-			SDL_SetAlpha(vnc->framebuffer,0,0);
-			if (vnc->framebuffer==NULL) {
-				DBERROR("Could not create framebuffer.\n");
-				return 0;
-			} else {
-				DBMESSAGE("Framebuffer created.\n");
-			}
-
-			// Initial fb update flag is whole screen
-			vnc->fbupdated=0;
-			vnc->updatedRect.x=0;
-			vnc->updatedRect.y=0;
-			vnc->updatedRect.w=vnc->serverFormat.width;
-			vnc->updatedRect.h=vnc->serverFormat.height;
-
-			// Create 32x32 cursorbuffer (with alpha)
-			vnc->cursorbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,32,32,32,vnc->rmask,vnc->gmask,vnc->bmask,vnc->amask);
-			SDL_SetAlpha(vnc->cursorbuffer,SDL_SRCALPHA,0);
-			if (vnc->cursorbuffer==NULL) {
-				DBERROR("Could not create cursorbuffer.\n");
-				return 0;
-			} else {
-				DBMESSAGE("Cursorbuffer created.\n");
-			}
-
-			// Create standard update request
-			vnc->updateRequest.messagetype = 3;
-			vnc->updateRequest.incremental = 0;
-			vnc->updateRequest.rect.x=0;
-			vnc->updateRequest.rect.y=0;
-			vnc->updateRequest.rect.width=vnc->serverFormat.width;
-			vnc->updateRequest.rect.height=vnc->serverFormat.height;
-            vnc_rect_swap(&vnc->updateRequest.rect);
-
-			// Initial framebuffer update request
-			result = send(vnc->socket,(const char *)&vnc->updateRequest,10,0);
-			if (result==10) {
-				DBMESSAGE("Initial Framebuffer Update Request: send\n");
-			} else {
-				DBERROR("Write error on initial update request.\n");
-				return 0;
-			}
-
-			// Modify update request for incremental updates
-			vnc->updateRequest.incremental = 1;
-
-			// Start client thread
-			DBMESSAGE("Starting Thread...\n");
-			vnc->thread =  SDL_CreateThread(vncClientThread,(void *)vnc);
-			return 1;
-
-		} else {
-			DBERROR("Could not connect to server %s:%i\n",host,port);
-			return 0;
-		}
+	recvd = Recv(vnc->socket,vnc->buffer,12,0);
+	if (recvd==12) {
+		vnc->buffer[12]=0;
+		DBMESSAGE("Server Version: %s",vnc->buffer);
 	} else {
-		DBERROR("Could not create socket.\n");
+		DBERROR("Read error on server version.\n");
 		return 0;
 	}
+
+	// Check major version 3
+	if (vnc->buffer[6]=='3') {
+		vnc->versionMajor = 3;
+		vnc->versionMinor = vnc->buffer[10]-'0';
+		DBMESSAGE("3.x, Minor Version: %i\n",vnc->versionMinor);
+	} else {
+		DBERROR("Major version mismatch. Expected 3.\n");
+		return 0;
+	}
+
+	// Send same version back
+	sent = send(vnc->socket,vnc->buffer,12,0);
+	if (sent==12) {
+		DBMESSAGE("Requested Version (clone): %s",vnc->buffer);
+	} else {
+		DBERROR("Write error on version echo.\n");
+		return 0;
+	}
+
+	return 1;
+}
+
+static int handshakeSecurity(tSDL_vnc *vnc, const char *password) {
+	unsigned int security_result;
+	char security_key[8];
+	char security_challenge[16];
+	char security_response[16];
+	int sent, recvd;
+
+	if (read_security_type(vnc) == 0) return 0;
+
+	// Check type
+	if ((vnc->security_type < 1) || (vnc->security_type > 2)) {
+		DBERROR("Security: Invalid.\n");
+		return 0;
+	}
+	if (vnc->security_type == 1) {
+		DBMESSAGE("Security: None.\n");
+	}
+	if (vnc->security_type == 2) {
+		DBMESSAGE("Security: VNC Authentication\n");
+
+		// Security Handshaking
+		recvd = Recv(vnc->socket,&security_challenge,16,0);
+		if (recvd==16) {
+			DBMESSAGE("Security Challenge: received\n");
+		} else {
+			DBERROR("Read error on security handshaking.\n");
+			return 0;
+		}
+
+		// Calculate response
+		strncpy(security_key,password,8);
+		deskey((unsigned char*)security_key,EN0);
+		des((unsigned char*)security_challenge,(unsigned char*)security_response);
+		des((unsigned char*)&security_challenge[8],(unsigned char*)&security_response[8]);
+
+		// Send response
+		sent = send(vnc->socket,(char *)security_response,16,0);
+		if (sent==16) {
+			DBMESSAGE("Security Response: sent\n");
+		} else {
+			DBERROR("Write error on security response.\n");
+			return 0;
+		}
+
+		// Security Result
+		recvd = Recv(vnc->socket,vnc->buffer,4,0);
+		if (recvd==4) {
+			security_result=vnc->buffer[0];
+			DBMESSAGE("Security Result: %i\n",security_result);
+		} else {
+			DBERROR("Read error on security result.\n");
+			return 0;
+		}
+
+		DBMESSAGE("Security Result: %i", security_result);
+
+		// Check result
+		if (security_result==1) {
+			DBERROR("Could not authenticate\n");
+			return 0;
+		}
+
+	}
+	return 1;
+}
+
+static int negotiatePixels(tSDL_vnc *vnc) {
+	tSDL_vnc_pixelFormat *pixel_format;
+	int sent;
+
+	if (vncReadServerFormat(vnc) == 0) return 0;
+
+	// Set pixel format
+	memset(vnc->buffer,0,20);
+	vnc->buffer[0]=0;
+	pixel_format = (void*) &vnc->buffer[4]; // Map pixel format over buffer
+	pixel_format->bpp=32;
+	pixel_format->depth=32;
+	pixel_format->bigendian=0;
+	pixel_format->truecolor=1;
+	pixel_format->redmax=swap_16(255);
+	pixel_format->greenmax=swap_16(255);
+	pixel_format->bluemax=swap_16(255);
+
+	/* FIXME: These depends on endianness; current values below works for
+	   little endian */
+	pixel_format->redshift=16; // Was 0, which doesn't match vnc->rmask
+	pixel_format->greenshift=8;
+	pixel_format->blueshift=0; // Was 16, which doesn't match vnc->bmask
+	sent = send(vnc->socket,vnc->buffer,20,0);
+	if (sent == 20) {
+		DBMESSAGE("Pixel format set.\n");
+	} else {
+		DBERROR("Error setting pixel format.\n");
+		return(0);
+	}
+	return 1;
+}
+
+enum Mode {
+	MODE_RAW,
+	MODE_COPYRECT,
+	MODE_RRE,
+	MODE_HEXTILE,
+	MODE_ZRLE,
+	MODE_CURSOR,
+	MODE_DESKTOP,
+	MODE_UNKNOWN,
+};
+
+struct ModeName {
+	char *name;
+	enum Mode mode;
+};
+
+const struct ModeName str_mode[] = {
+	{"raw", MODE_RAW},
+	{"copyrect", MODE_COPYRECT},
+	{"rre", MODE_RRE},
+	{"hextile", MODE_HEXTILE},
+	{"zrle", MODE_ZRLE},
+	{"cursor", MODE_CURSOR},
+	{"desktop", MODE_DESKTOP},
+};
+
+static enum Mode nameToMode(const char *name) {
+
+	for (int i = 0; i < ARRSIZE(str_mode); i++) {
+		const char *m = str_mode[i].name;
+		if (strncasecmp(name, m, strlen(m))==0) {
+			return str_mode[i].mode;
+		}
+	}
+	return MODE_UNKNOWN;
+}
+
+int negotiateEncodings(tSDL_vnc *vnc, const char *mode) {
+	int sent;
+	const char *curpos = mode;
+	// Set encodings
+	memset(vnc->buffer,0,VNC_BUFSIZE);
+	vnc->buffer[0]=2; // message type
+	// Count number of encodings
+	vnc->buffer[3]=0; // number of encodings
+	while (*curpos) {
+		enum Mode mode = nameToMode(curpos);
+		vnc->buffer[3]++;
+		switch (mode) {
+			case MODE_RAW:
+				DBMESSAGE("Requesting mode: RAW\n");
+				vnc->buffer[3+4*vnc->buffer[3]]=0;
+				break;
+			case MODE_COPYRECT:
+				DBMESSAGE("Requesting mode: COPYRECT\n");
+				vnc->buffer[3+4*vnc->buffer[3]]=1;
+				break;
+			case MODE_RRE:
+				DBMESSAGE("Requesting mode: RRE\n");
+				vnc->buffer[3+4*vnc->buffer[3]]=2;
+				break;
+			case MODE_HEXTILE:
+				DBMESSAGE("Requesting mode: HEXTILE\n");
+				vnc->buffer[3+4*vnc->buffer[3]]=5;
+				break;
+			case MODE_ZRLE:
+				DBMESSAGE("Requesting mode: ZRLE\n");
+				vnc->buffer[3+4*vnc->buffer[3]]=16;
+				break;
+			case MODE_CURSOR:
+				DBMESSAGE("Requesting pseudoencoding: CURSOR\n");
+				vnc->buffer[0+4*vnc->buffer[3]]=0xff;
+				vnc->buffer[1+4*vnc->buffer[3]]=0xff;
+				vnc->buffer[2+4*vnc->buffer[3]]=0xff;
+				vnc->buffer[3+4*vnc->buffer[3]]=0x11;
+				break;
+			case MODE_DESKTOP:
+				DBMESSAGE("Requesting pseudoencoding: DESKTOP\n");
+				vnc->buffer[0+4*vnc->buffer[3]]=0xff;
+				vnc->buffer[1+4*vnc->buffer[3]]=0xff;
+				vnc->buffer[2+4*vnc->buffer[3]]=0xff;
+				vnc->buffer[3+4*vnc->buffer[3]]=0x21;
+				break;
+			default:
+				DBERROR("Unknown mode.\n");
+				return 0;
+		}
+		if ((curpos=strstr(curpos,",")))
+			curpos++;
+		else
+			break;
+	}
+	sent = send(vnc->socket,vnc->buffer,4+4*vnc->buffer[3],0);
+	if (sent==(4+4*vnc->buffer[3])) {
+		DBMESSAGE("Mode request: send\n");
+	} else {
+		DBERROR("Write error on mode request.\n");
+		return 0;
+	}
+	return 1;
+}
+
+static int postInit(tSDL_vnc *vnc) {
+	// Create framebuffer
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+	DBMESSAGE("Client is: big-endian\n");
+	vnc->rmask = 0xff000000;
+	vnc->gmask = 0x00ff0000;
+	vnc->bmask = 0x0000ff00;
+	vnc->amask = 0x000000ff;
+#else
+	// Pre
+	DBMESSAGE("Client is: little-endian\n");
+	//@FIXME: Strange... Palm Pre needs reversed R <-> B order! Maybe check "if(SDL_BYTEORDER == SDL_LIL_ENDIAN)"
+	vnc->rmask = 0x00ff0000;
+	vnc->gmask = 0x0000ff00;
+	vnc->bmask = 0x000000ff;
+	vnc->amask = 0xff000000;
+
+#endif
+	vnc->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,vnc->serverFormat.width,vnc->serverFormat.height,32,vnc->rmask,vnc->gmask,vnc->bmask,0);
+	if (!vnc->framebuffer) {
+		DBERROR("Could not create framebuffer.\n");
+		return 0;
+	}
+	SDL_SetAlpha(vnc->framebuffer,0,0);
+	DBMESSAGE("Framebuffer created.\n");
+
+	// Initial fb update flag is whole screen
+	vnc->fbupdated=0;
+	vnc->updatedRect.x=0;
+	vnc->updatedRect.y=0;
+	vnc->updatedRect.w=vnc->serverFormat.width;
+	vnc->updatedRect.h=vnc->serverFormat.height;
+
+	// Create 32x32 cursorbuffer (with alpha)
+	vnc->cursorbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,32,32,32,vnc->rmask,vnc->gmask,vnc->bmask,vnc->amask);
+	SDL_SetAlpha(vnc->cursorbuffer,SDL_SRCALPHA,0);
+	if (vnc->cursorbuffer==NULL) {
+		DBERROR("Could not create cursorbuffer.\n");
+		return 0;
+	} else {
+		DBMESSAGE("Cursorbuffer created.\n");
+	}
+
+	// Create standard update request
+	vnc->updateRequest.messagetype = 3;
+	vnc->updateRequest.incremental = 0;
+	vnc->updateRequest.rect.x=0;
+	vnc->updateRequest.rect.y=0;
+	vnc->updateRequest.rect.width=vnc->serverFormat.width;
+	vnc->updateRequest.rect.height=vnc->serverFormat.height;
+	vnc_rect_swap(&vnc->updateRequest.rect);
+
+	return 1;
+}
+
+
+int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, int framerate) {
+	int sent;
+
+	if (!initVNC(vnc, framerate))
+		return 0;
+
+	if((vnc->socket = connectSocket(host, port)) == -1)
+		return 0;
+
+	if (!handshakeVersion(vnc))
+		return 0;
+
+	if (!handshakeSecurity(vnc, password))
+		return 0;
+
+	// Send Client Initialization
+	vnc->buffer[0]=1;
+	sent = send(vnc->socket,vnc->buffer,1,0);
+	if (sent==1) {
+		DBMESSAGE("Client Initialization: shared\n");
+	} else {
+		DBERROR("Write error on client initialization.\n");
+		return 0;
+	}
+
+	if (!negotiatePixels(vnc))
+		return 0;
+
+	if (!negotiateEncodings(vnc, mode))
+		return 0;
+
+
+	if (!postInit(vnc))
+		return 0;
+
+
+	// Initial framebuffer update request
+	sent = send(vnc->socket,&vnc->updateRequest,10,0);
+	if (sent==10) {
+		DBMESSAGE("Initial Framebuffer Update Request: send\n");
+	} else {
+		DBERROR("Write error on initial update request.\n");
+		return 0;
+	}
+
+	// Modify update request for incremental updates
+	vnc->updateRequest.incremental = 1;
+
+	// Start client thread
+	DBMESSAGE("Starting Thread...\n");
+	vnc->thread =  SDL_CreateThread(vncClientThread, vnc);
+	return 1;
 }
 
 int vncBlitFramebuffer(tSDL_vnc *vnc, SDL_Surface *target, SDL_Rect *urec) {
