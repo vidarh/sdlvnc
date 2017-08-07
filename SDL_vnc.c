@@ -81,6 +81,9 @@ void blit_raw(tSDL_vnc * vnc, tSDL_vnc_rect rect);
 	#define DBERROR 	printf(">>> Error: "); printf
 #endif
 
+#define MAX(a,b) (a > b ? a : b)
+#define MIN(a,b) (a < b ? a : b)
+
 #define CHECKED_READ(vnc, dest, len, message) { \
     int result = Recv(vnc->socket, dest, len, 0); \
     if (result!=len) { \
@@ -132,30 +135,20 @@ int Recv(int s, void *buf, size_t len, int flags)
 
 void GrowUpdateRegion(tSDL_vnc *vnc, SDL_Rect *trec)
 {
-	Sint16 ax1,ay1,ax2,ay2;
-	Sint16 bx1,by1,bx2,by2;
-
 	if (vnc->fbupdated) {
-		/* Original update rectangle */
-		ax1=vnc->updatedRect.x;
-		ay1=vnc->updatedRect.y;
-		ax2=vnc->updatedRect.x+vnc->updatedRect.w;
-		ay2=vnc->updatedRect.y+vnc->updatedRect.h;
-		/* New update rectangle */
-		bx1=trec->x;
-		by1=trec->y;
-		bx2=trec->x+trec->w;
-		by2=trec->y+trec->h;
-		/* Adjust */
-		if (bx1<ax1) ax1=bx1;
-		if (by1<ay1) ay1=by1;
-		if (bx2>ax2) ax2=bx2;
-		if (by2>ay2) ay2=by2;
-		/* Update */
-		vnc->updatedRect.x=ax1;
-		vnc->updatedRect.y=ay1;
-		vnc->updatedRect.w=ax2-ax1;
-		vnc->updatedRect.h=ay2-ay1;
+		Sint16 left,top,right,bot;
+		SDL_Rect *srec = &vnc->updatedRect;
+
+		/* Adjust bounds for growth */
+		top=MIN(srec->y, trec->y);
+		left=MIN(srec->x, trec->x);
+		bot=MAX(srec->y+srec->h, trec->y + trec->h);
+		right=MAX(srec->x+srec->w, trec->x + trec->w);
+
+		srec->y=top;
+		srec->x=left;
+		srec->h=bot-top;
+		srec->w=right-left;
 	} else {
 		/* Initialize update rectangle */
 		vnc->updatedRect=*trec;
