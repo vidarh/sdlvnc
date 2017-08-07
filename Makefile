@@ -1,6 +1,6 @@
 #ARCH=-m32
 DEBUG=#-DDEBUG
-CFLAGS=-g -I. -Wall -std=c11 -pedantic $(ARCH) $(DEBUG)
+CFLAGS=-g -I. -Wall -std=c11 $(ARCH) $(DEBUG)
 LDFLAGS=g -lSDL -lm $(ARCH)
 
 test: d3des.o SDL_vnc.o support.o

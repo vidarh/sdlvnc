@@ -64,7 +64,7 @@ void blit_raw(tSDL_vnc * vnc, tSDL_vnc_rect rect);
 #ifdef DEBUG
 	#define DBMESSAGE 	printf
 #else
-	#define DBMESSAGE 	//
+	#define DBMESSAGE(...)	//
 #endif
 
 #ifdef TRACE_LAST_ERROR
