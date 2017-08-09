@@ -923,29 +923,25 @@ static int handshakeVersion(tSDL_vnc *vnc) {
 	int sent, recvd;
 
 	recvd = Recv(vnc->socket,vnc->buffer,12,0);
-	if (recvd==12) {
-		vnc->buffer[12]=0;
-		DBMESSAGE("Server Version: %s",vnc->buffer);
-	} else {
+	if (recvd!=12) {
 		DBERROR("Read error on server version.\n");
 		return 0;
 	}
+	vnc->buffer[12]=0;
+	DBMESSAGE("Server Version: %s",vnc->buffer);
 
 	// Check major version 3
-	if (vnc->buffer[6]=='3') {
-		vnc->versionMajor = 3;
-		vnc->versionMinor = vnc->buffer[10]-'0';
-		DBMESSAGE("3.x, Minor Version: %i\n",vnc->versionMinor);
-	} else {
+	if (vnc->buffer[6]!='3') {
 		DBERROR("Major version mismatch. Expected 3.\n");
 		return 0;
 	}
+	vnc->versionMajor = 3;
+	vnc->versionMinor = vnc->buffer[10]-'0';
+	DBMESSAGE("3.x, Minor Version: %i\n",vnc->versionMinor);
 
 	// Send same version back
 	sent = send(vnc->socket,vnc->buffer,12,0);
-	if (sent==12) {
-		DBMESSAGE("Requested Version (clone): %s",vnc->buffer);
-	} else {
+	if (sent!=12) {
 		DBERROR("Write error on version echo.\n");
 		return 0;
 	}
@@ -975,12 +971,11 @@ static int handshakeSecurity(tSDL_vnc *vnc, const char *password) {
 
 		// Security Handshaking
 		recvd = Recv(vnc->socket,&security_challenge,16,0);
-		if (recvd==16) {
-			DBMESSAGE("Security Challenge: received\n");
-		} else {
+		if (recvd!=16) {
 			DBERROR("Read error on security handshaking.\n");
 			return 0;
 		}
+		DBMESSAGE("Security Challenge: received\n");
 
 		// Calculate response
 		strncpy(security_key,password,8);
@@ -989,28 +984,25 @@ static int handshakeSecurity(tSDL_vnc *vnc, const char *password) {
 		des((unsigned char*)&security_challenge[8],(unsigned char*)&security_response[8]);
 
 		// Send response
-		sent = send(vnc->socket,(char *)security_response,16,0);
-		if (sent==16) {
-			DBMESSAGE("Security Response: sent\n");
-		} else {
+		sent = send(vnc->socket,security_response,16,0);
+		if (sent!=16) {
 			DBERROR("Write error on security response.\n");
 			return 0;
 		}
+		DBMESSAGE("Security Response: sent\n");
 
 		// Security Result
 		recvd = Recv(vnc->socket,vnc->buffer,4,0);
-		if (recvd==4) {
-			security_result=vnc->buffer[0];
-			DBMESSAGE("Security Result: %i\n",security_result);
-		} else {
+		if (recvd!=4) {
 			DBERROR("Read error on security result.\n");
 			return 0;
 		}
+		security_result=vnc->buffer[0];
 
 		DBMESSAGE("Security Result: %i", security_result);
 
 		// Check result
-		if (security_result==1) {
+		if (security_result!=0) {
 			DBERROR("Could not authenticate\n");
 			return 0;
 		}
