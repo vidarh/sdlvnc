@@ -36,6 +36,7 @@ Butchered by Vidar Hokstad, vidar@hokstad.com
 #include <sys/types.h>
 
 #include "SDL_vnc.h"
+#include "SDL_vnc_private.h"
 #include "d3des.h"
 
 // FIXME: Currently these need to be larger than maximum used buffer
@@ -530,19 +531,19 @@ int ReadServerRectangle(tSDL_vnc * vnc,
     DBMESSAGE("    @ %u,%u size %u,%u encoding %u\n",serverRectangle->rect.x,serverRectangle->rect.y,serverRectangle->rect.width,serverRectangle->rect.height,serverRectangle->encoding);
     
     /* Sanity check values */
-    if (serverRectangle->rect.x > vnc->serverFormat.width) {
+    if (serverRectangle->rect.x > vnc->serverFormat->width) {
         DBMESSAGE("Bad rectangle: x=%u setting to 0\n",serverRectangle->rect.x);
         serverRectangle->rect.x=0;
     }
-    if (serverRectangle->rect.y > vnc->serverFormat.height) {
+    if (serverRectangle->rect.y > vnc->serverFormat->height) {
         DBMESSAGE("Bad rectangle: y=%u setting to 0\n",serverRectangle->rect.y);
         serverRectangle->rect.y=0;
     }
-    if ((serverRectangle->rect.width<=0) || (serverRectangle->rect.width>vnc->serverFormat.width)) {
+    if ((serverRectangle->rect.width<=0) || (serverRectangle->rect.width>vnc->serverFormat->width)) {
         DBMESSAGE("Bad rectangle: width=%u setting to 1\n",serverRectangle->rect.width);
         serverRectangle->rect.width=1;
     }
-    if ((serverRectangle->rect.height<=0) || (serverRectangle->rect.height>vnc->serverFormat.height)) {
+    if ((serverRectangle->rect.height<=0) || (serverRectangle->rect.height>vnc->serverFormat->height)) {
         DBMESSAGE("Bad rectangle: height=%u setting to 1\n",serverRectangle->rect.height);
         serverRectangle->rect.height=1;
     }
@@ -776,26 +777,26 @@ static int vncReadServerFormat(tSDL_vnc *vnc) {
     int result = Recv(vnc->socket,&vnc->serverFormat,24,0);
     if (result==24) {
         // Swap format numbers
-        vnc->serverFormat.width      =swap_16(vnc->serverFormat.width);
-        vnc->serverFormat.height     =swap_16(vnc->serverFormat.height);
-        vnc->serverFormat.pixel_format.redmax     =swap_16(vnc->serverFormat.pixel_format.redmax);
-        vnc->serverFormat.pixel_format.greenmax   =swap_16(vnc->serverFormat.pixel_format.greenmax);
-        vnc->serverFormat.pixel_format.bluemax    =swap_16(vnc->serverFormat.pixel_format.bluemax);
-        vnc->serverFormat.namelength =swap_32(vnc->serverFormat.namelength);
+        vnc->serverFormat->width      =swap_16(vnc->serverFormat->width);
+        vnc->serverFormat->height     =swap_16(vnc->serverFormat->height);
+        vnc->serverFormat->pixel_format.redmax     =swap_16(vnc->serverFormat->pixel_format.redmax);
+        vnc->serverFormat->pixel_format.greenmax   =swap_16(vnc->serverFormat->pixel_format.greenmax);
+        vnc->serverFormat->pixel_format.bluemax    =swap_16(vnc->serverFormat->pixel_format.bluemax);
+        vnc->serverFormat->namelength =swap_32(vnc->serverFormat->namelength);
         // Info
-        DBMESSAGE("Format Width: %u (0x%04x)\n",vnc->serverFormat.width,vnc->serverFormat.width);
-        DBMESSAGE("Format Height: %u (0x%04x)\n",vnc->serverFormat.height,vnc->serverFormat.height);
-        DBMESSAGE("Format Pixel bpp: %u\n",vnc->serverFormat.pixel_format.bpp);
-        DBMESSAGE("Format Pixel depth: %u\n",vnc->serverFormat.pixel_format.depth);
-        DBMESSAGE("Format Pixel big endian: %u\n",vnc->serverFormat.pixel_format.bigendian);
-        DBMESSAGE("Format Pixel true color: %u\n",vnc->serverFormat.pixel_format.truecolor);
-        DBMESSAGE("Format Pixel R max: %u\n",vnc->serverFormat.pixel_format.redmax);
-        DBMESSAGE("Format Pixel G max: %u\n",vnc->serverFormat.pixel_format.greenmax);
-        DBMESSAGE("Format Pixel B max: %u\n",vnc->serverFormat.pixel_format.bluemax);
-        DBMESSAGE("Format Pixel R shift: %u\n",vnc->serverFormat.pixel_format.redshift);
-        DBMESSAGE("Format Pixel G shift: %u\n",vnc->serverFormat.pixel_format.greenshift);
-        DBMESSAGE("Format Pixel B shift: %u\n",vnc->serverFormat.pixel_format.blueshift);
-        DBMESSAGE("Format Name Length: %u (0x%08x)\n",vnc->serverFormat.namelength,vnc->serverFormat.namelength);
+        DBMESSAGE("Format Width: %u (0x%04x)\n",vnc->serverFormat->width,vnc->serverFormat->width);
+        DBMESSAGE("Format Height: %u (0x%04x)\n",vnc->serverFormat->height,vnc->serverFormat->height);
+        DBMESSAGE("Format Pixel bpp: %u\n",vnc->serverFormat->pixel_format.bpp);
+        DBMESSAGE("Format Pixel depth: %u\n",vnc->serverFormat->pixel_format.depth);
+        DBMESSAGE("Format Pixel big endian: %u\n",vnc->serverFormat->pixel_format.bigendian);
+        DBMESSAGE("Format Pixel true color: %u\n",vnc->serverFormat->pixel_format.truecolor);
+        DBMESSAGE("Format Pixel R max: %u\n",vnc->serverFormat->pixel_format.redmax);
+        DBMESSAGE("Format Pixel G max: %u\n",vnc->serverFormat->pixel_format.greenmax);
+        DBMESSAGE("Format Pixel B max: %u\n",vnc->serverFormat->pixel_format.bluemax);
+        DBMESSAGE("Format Pixel R shift: %u\n",vnc->serverFormat->pixel_format.redshift);
+        DBMESSAGE("Format Pixel G shift: %u\n",vnc->serverFormat->pixel_format.greenshift);
+        DBMESSAGE("Format Pixel B shift: %u\n",vnc->serverFormat->pixel_format.blueshift);
+        DBMESSAGE("Format Name Length: %u (0x%08x)\n",vnc->serverFormat->namelength,vnc->serverFormat->namelength);
     } else {
         DBERROR("Read error in server info (%i)\n", result);
         return 0;
@@ -804,15 +805,15 @@ static int vncReadServerFormat(tSDL_vnc *vnc) {
 	
     
     // Desktop Name
-    if (vnc->serverFormat.namelength>(VNC_BUFSIZE-1)) {
-        DBERROR("Desktop name too long: %i\n",vnc->serverFormat.namelength);
+    if (vnc->serverFormat->namelength>(VNC_BUFSIZE-1)) {
+        DBERROR("Desktop name too long: %i\n",vnc->serverFormat->namelength);
         return 0;
     }
-    if (vnc->serverFormat.namelength>1) {
-        result = Recv(vnc->socket,vnc->serverFormat.name,vnc->serverFormat.namelength,0);
-        if (result==vnc->serverFormat.namelength) {
-            vnc->serverFormat.name[vnc->serverFormat.namelength]=0;
-            DBMESSAGE("Desktop name: %s\n",vnc->serverFormat.name);
+    if (vnc->serverFormat->namelength>1) {
+        result = Recv(vnc->socket,vnc->serverFormat->name,vnc->serverFormat->namelength,0);
+        if (result==vnc->serverFormat->namelength) {
+            vnc->serverFormat->name[vnc->serverFormat->namelength]=0;
+            DBMESSAGE("Desktop name: %s\n",vnc->serverFormat->name);
         } else {
             DBERROR("Read error on desktop name.\n");
             return 0;
@@ -846,6 +847,23 @@ static int initVNC(tSDL_vnc *vnc, int framerate) {
 		free(vnc->clientbuffer);
 		free(vnc->buffer);
 		DBERROR("Out of memory allocating rawbuffer.\n");
+		return 0;
+	}
+
+	if(!(vnc->serverFormat = calloc(sizeof(*vnc->serverFormat), 1))) {
+		free(vnc->rawbuffer);
+		free(vnc->clientbuffer);
+		free(vnc->buffer);
+		DBERROR("Out of memory allocating serverFormat.\n");
+		return 0;
+	}
+
+	if(!(vnc->updateRequest = calloc(sizeof(*vnc->updateRequest), 1))) {
+		free(vnc->serverFormat);
+		free(vnc->clientbuffer);
+		free(vnc->buffer);
+		free(vnc->rawbuffer);
+		DBERROR("Out of memory allocating serverFormat.\n");
 		return 0;
 	}
 
@@ -1164,7 +1182,7 @@ static int postInit(tSDL_vnc *vnc) {
 	vnc->amask = 0xff000000;
 
 #endif
-	vnc->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,vnc->serverFormat.width,vnc->serverFormat.height,32,vnc->rmask,vnc->gmask,vnc->bmask,0);
+	vnc->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,vnc->serverFormat->width,vnc->serverFormat->height,32,vnc->rmask,vnc->gmask,vnc->bmask,0);
 	if (!vnc->framebuffer) {
 		DBERROR("Could not create framebuffer.\n");
 		return 0;
@@ -1176,8 +1194,8 @@ static int postInit(tSDL_vnc *vnc) {
 	vnc->fbupdated=0;
 	vnc->updatedRect.x=0;
 	vnc->updatedRect.y=0;
-	vnc->updatedRect.w=vnc->serverFormat.width;
-	vnc->updatedRect.h=vnc->serverFormat.height;
+	vnc->updatedRect.w=vnc->serverFormat->width;
+	vnc->updatedRect.h=vnc->serverFormat->height;
 
 	// Create 32x32 cursorbuffer (with alpha)
 	vnc->cursorbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,32,32,32,vnc->rmask,vnc->gmask,vnc->bmask,vnc->amask);
@@ -1190,13 +1208,13 @@ static int postInit(tSDL_vnc *vnc) {
 	}
 
 	// Create standard update request
-	vnc->updateRequest.messagetype = 3;
-	vnc->updateRequest.incremental = 0;
-	vnc->updateRequest.rect.x=0;
-	vnc->updateRequest.rect.y=0;
-	vnc->updateRequest.rect.width=vnc->serverFormat.width;
-	vnc->updateRequest.rect.height=vnc->serverFormat.height;
-	vnc_rect_swap(&vnc->updateRequest.rect);
+	vnc->updateRequest->messagetype = 3;
+	vnc->updateRequest->incremental = 0;
+	vnc->updateRequest->rect.x=0;
+	vnc->updateRequest->rect.y=0;
+	vnc->updateRequest->rect.width=vnc->serverFormat->width;
+	vnc->updateRequest->rect.height=vnc->serverFormat->height;
+	vnc_rect_swap(&vnc->updateRequest->rect);
 
 	return 1;
 }
@@ -1248,7 +1266,7 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 	}
 
 	// Modify update request for incremental updates
-	vnc->updateRequest.incremental = 1;
+	vnc->updateRequest->incremental = 1;
 
 	// Start client thread
 	DBMESSAGE("Starting Thread...\n");

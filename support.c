@@ -8,6 +8,7 @@
 
 
 #include "SDL_vnc.h"
+#include "SDL_vnc_private.h"
 
 #ifdef DEBUG
 	#define DBMESSAGE 	printf
@@ -22,9 +23,6 @@
     return 0; \
     } \
     }
-
-void vnc_to_sdl_rect(tSDL_vnc_rect * src, SDL_Rect * dest);
-void GrowUpdateRegion(tSDL_vnc *vnc, SDL_Rect *trec);
 
 
 int read_raw(tSDL_vnc * vnc, tSDL_vnc_rect rect) {
