@@ -94,6 +94,15 @@ void blit_raw(tSDL_vnc * vnc, tSDL_vnc_rect rect);
     } \
     }
 
+typedef enum ClientMsgType {
+	CMSG_PIXELFORMAT  = 0,
+	CMSG_SETENCODINGS = 2,
+	CMSG_FBUPDATEREQ  = 3,
+	CMSG_KEYEVENT     = 4,
+	CMSG_POINTEREVENT = 5,
+	CMSG_CLIENTCUTTXT = 6,
+} ClientMsgType;
+
 typedef enum VNCEncoding {
 	ENC_RAW = 0,
 	ENC_COPYRECT = 1,
@@ -1071,105 +1080,79 @@ static int negotiatePixels(tSDL_vnc *vnc) {
 	return 1;
 }
 
-enum Mode {
-	MODE_RAW,
-	MODE_COPYRECT,
-	MODE_RRE,
-	MODE_HEXTILE,
-	MODE_ZRLE,
-	MODE_CURSOR,
-	MODE_DESKTOP,
-	MODE_UNKNOWN,
-};
-
-struct ModeName {
+struct EncName {
 	char *name;
-	enum Mode mode;
+	VNCEncoding enc;
 };
 
-const struct ModeName str_mode[] = {
-	{"raw", MODE_RAW},
-	{"copyrect", MODE_COPYRECT},
-	{"rre", MODE_RRE},
-	{"hextile", MODE_HEXTILE},
-	{"zrle", MODE_ZRLE},
-	{"cursor", MODE_CURSOR},
-	{"desktop", MODE_DESKTOP},
+const struct EncName str_enc[] = {
+	{     "raw", ENC_RAW},
+	{"copyrect", ENC_COPYRECT},
+	{     "rre", ENC_RRE},
+	{ "hextile", ENC_HEXTILE},
+	{    "zrle", ENC_ZRLE},
+	{  "cursor", ENC_CURSOR},
+	{ "desktop", ENC_DESKTOP},
 };
 
-static enum Mode nameToMode(const char *name) {
+static VNCEncoding nameToEnc(const char *name) {
 
-	for (int i = 0; i < ARRSIZE(str_mode); i++) {
-		const char *m = str_mode[i].name;
-		if (strncasecmp(name, m, strlen(m))==0) {
-			return str_mode[i].mode;
+	for (int i = 0; i < ARRSIZE(str_enc); i++) {
+		if (strcasecmp(str_enc[i].name, name)==0) {
+			return str_enc[i].enc;
 		}
 	}
-	return MODE_UNKNOWN;
+	return -1;
 }
 
-int negotiateEncodings(tSDL_vnc *vnc, const char *mode) {
-	int sent;
-	const char *curpos = mode;
-	// Set encodings
-	memset(vnc->buffer,0,VNC_BUFSIZE);
-	vnc->buffer[0]=2; // message type
-	// Count number of encodings
-	vnc->buffer[3]=0; // number of encodings
-	while (*curpos) {
-		enum Mode mode = nameToMode(curpos);
-		vnc->buffer[3]++;
-		switch (mode) {
-			case MODE_RAW:
-				DBMESSAGE("Requesting mode: RAW\n");
-				vnc->buffer[3+4*vnc->buffer[3]]=0;
-				break;
-			case MODE_COPYRECT:
-				DBMESSAGE("Requesting mode: COPYRECT\n");
-				vnc->buffer[3+4*vnc->buffer[3]]=1;
-				break;
-			case MODE_RRE:
-				DBMESSAGE("Requesting mode: RRE\n");
-				vnc->buffer[3+4*vnc->buffer[3]]=2;
-				break;
-			case MODE_HEXTILE:
-				DBMESSAGE("Requesting mode: HEXTILE\n");
-				vnc->buffer[3+4*vnc->buffer[3]]=5;
-				break;
-			case MODE_ZRLE:
-				DBMESSAGE("Requesting mode: ZRLE\n");
-				vnc->buffer[3+4*vnc->buffer[3]]=16;
-				break;
-			case MODE_CURSOR:
-				DBMESSAGE("Requesting pseudoencoding: CURSOR\n");
-				vnc->buffer[0+4*vnc->buffer[3]]=0xff;
-				vnc->buffer[1+4*vnc->buffer[3]]=0xff;
-				vnc->buffer[2+4*vnc->buffer[3]]=0xff;
-				vnc->buffer[3+4*vnc->buffer[3]]=0x11;
-				break;
-			case MODE_DESKTOP:
-				DBMESSAGE("Requesting pseudoencoding: DESKTOP\n");
-				vnc->buffer[0+4*vnc->buffer[3]]=0xff;
-				vnc->buffer[1+4*vnc->buffer[3]]=0xff;
-				vnc->buffer[2+4*vnc->buffer[3]]=0xff;
-				vnc->buffer[3+4*vnc->buffer[3]]=0x21;
-				break;
-			default:
-				DBERROR("Unknown mode.\n");
-				return 0;
-		}
-		if ((curpos=strstr(curpos,",")))
-			curpos++;
-		else
-			break;
+struct vnc_set_encodings_t {
+	uint8_t  type;
+	uint8_t  padding;
+	uint16_t count;
+	 int32_t encodings[];
+};
+
+static void hton_set_encodings(struct vnc_set_encodings_t *e)
+{
+	int i;
+	for (i = 0; i < e->count; i++) {
+		e->encodings[i] = htonl((uint32_t) e->encodings[i]);
 	}
-	sent = send(vnc->socket,vnc->buffer,4+4*vnc->buffer[3],0);
-	if (sent==(4+4*vnc->buffer[3])) {
-		DBMESSAGE("Mode request: send\n");
-	} else {
+	e->count = htons(e->count);
+}
+
+static int negotiateEncodings(tSDL_vnc *vnc, const char *modes) {
+	int sent;
+	struct vnc_set_encodings_t *packet = (void*) vnc->buffer;
+	size_t psize;
+
+	packet->type = CMSG_SETENCODINGS;
+	packet->padding = 0;
+	packet->count = 0;
+
+	DBMESSAGE("Requesting modes %s\n", modes);
+	for (; modes && *modes; packet->count++) {
+		VNCEncoding enc = nameToEnc(modes);
+		if (enc == -1) {
+			DBERROR("Unknown encoding.\n");
+			return 0;
+		}
+
+		packet->encodings[packet->count] = enc;
+
+		if ((modes = strchr(modes,',')))
+			modes++;
+	}
+	psize = sizeof(*packet) + packet->count*sizeof(packet->encodings[0]);
+
+	hton_set_encodings(packet);
+	sent = send(vnc->socket, packet, psize, 0);
+	if (sent != psize) {
 		DBERROR("Write error on mode request.\n");
 		return 0;
 	}
+
+	DBMESSAGE("Mode request sent\n");
 	return 1;
 }
 
