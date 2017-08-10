@@ -94,7 +94,16 @@ void blit_raw(tSDL_vnc * vnc, tSDL_vnc_rect rect);
     } \
     }
 
-
+typedef enum VNCEncoding {
+	ENC_RAW = 0,
+	ENC_COPYRECT = 1,
+	ENC_RRE = 2,
+	ENC_HEXTILE = 5,
+	ENC_TRLE = 15,
+	ENC_ZRLE = 16,
+	ENC_CURSOR = -239,
+	ENC_DESKTOP = -223,
+} VNCEncoding;
 
 char *strdup(const char *s);
 
@@ -606,31 +615,31 @@ static int HandleServerMessage_update(tSDL_vnc *vnc)
 
         /* Rectangle Data */
         switch (serverRectangle.encoding) {
-        case 0:
+        case ENC_RAW:
             if (ServerRectangle_Raw(vnc, serverRectangle.rect) == 0) return 0;
             break;
-        case 1:
+        case ENC_COPYRECT:
             if (PrepScratchBuffer(vnc, serverRectangle.rect) == 0) return 0;
             if (ServerRectangle_CopyRect(vnc, serverRectangle.rect) == 0) return 0;
             break;
-        case 2:
+        case ENC_RRE:
             if (PrepScratchBuffer(vnc, serverRectangle.rect) == 0) return 0;
             if (ServerRectangle_RRE(vnc, serverRectangle.rect) == 0) return 0;
             break;
-        case 5:
+        case ENC_HEXTILE:
             if (PrepScratchBuffer(vnc, serverRectangle.rect) == 0) return 0;
             if (ServerRectangle_HexTile(vnc, serverRectangle.rect) == 0) return 0;
             break;
-        case 16:
+        case ENC_ZRLE:
             DBERROR("ZRLE encoding - ignored.\n");
             return 0;
             break;
             
-        case 0xffffff11:
+        case ENC_CURSOR:
             if (ServerRectangle_Cursor(vnc, serverRectangle.rect) == 0) return 0;
             break;
             
-        case 0xffffff21:
+        case ENC_DESKTOP:
             DBMESSAGE("DESKTOP pseudo-encoding (ignored).\n");
             break;
             
