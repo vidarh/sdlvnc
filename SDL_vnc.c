@@ -34,6 +34,7 @@ Butchered by Vidar Hokstad, vidar@hokstad.com
 #include <errno.h>
 #include <string.h>
 #include <sys/types.h>
+#include <assert.h>
 
 #include "SDL_vnc.h"
 #include "SDL_vnc_private.h"
@@ -807,7 +808,7 @@ int vncClientThread (void *data) {
 			
 			// Framebuffer update request
 			//DBMESSAGE("vncClientThread: Sending Update Request...\n",result);
-			result = send(vnc->socket,(const char *)&vnc->updateRequest,10,0);
+			result = send(vnc->socket,vnc->updateRequest,10,0);
 			if (result==10) {
 				//DBMESSAGE("vncClientThread: Incremental Framebuffer Update Request: send\n");
 			} else {
@@ -833,7 +834,7 @@ int vncClientThread (void *data) {
 
 static int vncReadServerFormat(tSDL_vnc *vnc) {
     // Server Initialiazation
-    int result = Recv(vnc->socket,&vnc->serverFormat,24,0);
+    int result = Recv(vnc->socket,vnc->serverFormat,24,0);
     if (result==24) {
         // Swap format numbers
         vnc->serverFormat->width      =swap_16(vnc->serverFormat->width);
@@ -1106,36 +1107,47 @@ static int handshakeSecurity(tSDL_vnc *vnc, const char *password) {
 	return 1;
 }
 
-static int negotiatePixels(tSDL_vnc *vnc) {
-	tSDL_vnc_pixelFormat *pixel_format;
-	int sent;
+struct setPixelFormat {
+	uint8_t type;
+	uint8_t padding[3];
+	tSDL_vnc_pixelFormat format;
+};
 
-	if (vncReadServerFormat(vnc) == 0) return 0;
+static int negotiatePixels(tSDL_vnc *vnc) {
+	struct setPixelFormat *packet = vnc->buffer;
+	ssize_t sent, datalen;
+
+	if (vncReadServerFormat(vnc) == 0)
+		return 0;
+
+	packet->type = CMSG_PIXELFORMAT;
+	memset(packet->padding, 0, sizeof(packet->padding));
 
 	// Set pixel format
-	memset(vnc->buffer,0,20);
-	vnc->buffer[0]=0;
-	pixel_format = (void*) &vnc->buffer[4]; // Map pixel format over buffer
-	pixel_format->bpp=32;
-	pixel_format->depth=32;
-	pixel_format->bigendian=0;
-	pixel_format->truecolor=1;
-	pixel_format->redmax=swap_16(255);
-	pixel_format->greenmax=swap_16(255);
-	pixel_format->bluemax=swap_16(255);
+	packet->format.bpp=32;
+	packet->format.depth=32;
+	packet->format.bigendian=0;
+	packet->format.truecolor=1;
+	packet->format.redmax=htons(255);
+	packet->format.greenmax=htons(255);
+	packet->format.bluemax=htons(255);
 
-	/* FIXME: These depends on endianness; current values below works for
+	/* FIXME: These depend on endianness; current values below works for
 	   little endian */
-	pixel_format->redshift=16; // Was 0, which doesn't match vnc->rmask
-	pixel_format->greenshift=8;
-	pixel_format->blueshift=0; // Was 16, which doesn't match vnc->bmask
-	sent = send(vnc->socket,vnc->buffer,20,0);
-	if (sent == 20) {
-		DBMESSAGE("Pixel format set.\n");
-	} else {
+	packet->format.redshift=16; // Was 0, which doesn't match vnc->rmask
+	packet->format.greenshift=8;
+	packet->format.blueshift=0; // Was 16, which doesn't match vnc->bmask
+	memset(packet->format.padding, 0, sizeof(packet->format.padding));
+
+	static_assert(sizeof(*packet) == 20, "Packet holding pixel format should be 20 bytes.");
+	datalen = sizeof(*packet);
+	sent = send(vnc->socket, packet, datalen, 0);
+	if (sent != datalen) {
 		DBERROR("Error setting pixel format.\n");
-		return(0);
+		return 0;
 	}
+	DBMESSAGE("Pixel format set.\n");
+
 	return 1;
 }
 
@@ -1272,7 +1284,8 @@ static int postInit(tSDL_vnc *vnc) {
 
 
 int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, int framerate) {
-	int sent;
+	ssize_t sent, datalen;
+	uint8_t shared = 1;
 
 	if (!initVNC(vnc, framerate))
 		return 0;
@@ -1287,14 +1300,13 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 		return 0;
 
 	// Send Client Initialization
-	vnc->buffer[0]=1;
-	sent = send(vnc->socket,vnc->buffer,1,0);
-	if (sent==1) {
-		DBMESSAGE("Client Initialization: shared\n");
-	} else {
+	datalen = sizeof(shared);
+	sent = send(vnc->socket, vnc->buffer, datalen, 0);
+	if (sent != datalen) {
 		DBERROR("Write error on client initialization.\n");
 		return 0;
 	}
+	DBMESSAGE("Client Initialization: shared\n");
 
 	if (!negotiatePixels(vnc))
 		return 0;
@@ -1308,20 +1320,21 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 
 
 	// Initial framebuffer update request
-	sent = send(vnc->socket,&vnc->updateRequest,10,0);
-	if (sent==10) {
-		DBMESSAGE("Initial Framebuffer Update Request: send\n");
-	} else {
+	static_assert(sizeof(*vnc->updateRequest) == 10, "Size of update request shoud be 10");
+	datalen = sizeof(*vnc->updateRequest);
+	sent = send(vnc->socket, vnc->updateRequest, datalen, 0);
+	if (sent != 10) {
 		DBERROR("Write error on initial update request.\n");
 		return 0;
 	}
+	DBMESSAGE("Initial Framebuffer Update Request sent\n");
 
 	// Modify update request for incremental updates
 	vnc->updateRequest->incremental = 1;
 
 	// Start client thread
 	DBMESSAGE("Starting Thread...\n");
-	vnc->thread =  SDL_CreateThread(vncClientThread, vnc);
+	vnc->thread = SDL_CreateThread(vncClientThread, vnc);
 	return 1;
 }
 
@@ -1462,7 +1475,7 @@ int vncClientKeyevent(tSDL_vnc *vnc, unsigned char downflag, unsigned int key)
 		clientKeyevent.messagetype=4;
 		clientKeyevent.downflag=downflag;
 		clientKeyevent.key=swap_32(key);
-		memcpy(&vnc->clientbuffer[vnc->clientbufferpos],&clientKeyevent,8);
+		memcpy(vnc->clientbuffer + vnc->clientbufferpos, &clientKeyevent, 8);
 		vnc->clientbufferpos += 8;
 		result = 1;
 	} else {
@@ -1484,7 +1497,7 @@ int vncClientPointerevent(tSDL_vnc *vnc, unsigned char buttonmask, unsigned shor
 		clientPointerevent.buttonmask=buttonmask;
 		clientPointerevent.x=swap_16(x);
 		clientPointerevent.y=swap_16(y);
-		memcpy(&vnc->clientbuffer[vnc->clientbufferpos],&clientPointerevent,6);
+		memcpy(vnc->clientbuffer + vnc->clientbufferpos, &clientPointerevent, 6);
 		vnc->clientbufferpos += 6;
 		result = 1;
 	} else {

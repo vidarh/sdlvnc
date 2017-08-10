@@ -70,9 +70,9 @@ typedef struct tSDL_vnc_updateRequest tSDL_vnc_updateRequest;
 		// Variables below are accessed by the Thread
 		// and need to be mutex locked if accessed externally
 		
-		unsigned char *buffer;				// general IO buffer
+		void *buffer;				// general IO buffer
 		
-		char *clientbuffer;			// buffer for client-to-server data
+		void *clientbuffer;			// buffer for client-to-server data
 		int clientbufferpos;			// current position in buffer
 		
 		int fbupdated;				// flag indicating that the framebuffer was updated
