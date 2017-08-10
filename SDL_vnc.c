@@ -194,51 +194,92 @@ static int handleHextile(tSDL_vnc *vnc) {
     return 1;
 }
 
+enum SecType {
+	SEC_INVALID = 0,
+	SEC_NOAUTH  = 1,
+	SEC_VNCAUTH = 2,
+};
 
+static void printReasonString(tSDL_vnc *vnc) {
+	uint32_t size = 0;
+	ssize_t recvd, total;
 
-static int read_security_type(tSDL_vnc *vnc) {
-    if (vnc->versionMinor < 7) {
-        // Read security type (simple)
-        CHECKED_READ(vnc, vnc->buffer, 4, "security type");
-        vnc->security_type=vnc->buffer[3];
-        DBMESSAGE("Security type (read): %i\n", vnc->security_type);
-        return 1;
-    }
+	recvd = Recv(vnc->socket, &size, sizeof(size), 0);
+	if (recvd != 4) {
+		DBERROR("Read error on reason.\n");
+		return;
+	}
+	size = ntohl(size);
 
-    // Addition for RFB 003 008
+	DBERROR("Reason: ");
+	for (total = 0; total < size; total += recvd) {
+		memset(vnc->buffer, 0, VNC_BUFSIZE);
+		recvd = Recv(vnc->socket, vnc->buffer, MIN(size, VNC_BUFSIZE-1), 0);
+		if (recvd <= 0)
+			break;
+		printf(vnc->buffer);
+	}
+	printf("\n");
 
-    CHECKED_READ(vnc, vnc->buffer, 1, "security type");
+	if (recvd == -1) {
+		DBERROR("Recv error: %s\n", strerror(errno));
+	}
+}
 
-    // Security Type List! Receive number of supported Security Types
-    int nSecTypes = vnc->buffer[0];
-    if (nSecTypes == 0) {
-        DBERROR("Server offered an empty list of security types.\n");
-        return 0;
-    }
-        
-    // Receive Security Type List (Buffer overflow possible!)
-    int result = Recv(vnc->socket,vnc->buffer,nSecTypes,0);
-        
-    // Find supported one...
-    vnc->security_type = 0;
-    int i;
-    for (i = 0; i < result; i++) {
-        vnc->security_type = vnc->buffer[i];
-        // Break if supported type (currently 1 or 2) found
-        if ((vnc->security_type == 1) || (vnc->security_type == 2)) break;
-    }
-    
-    // Select it
-    DBMESSAGE("Security type (select): %i\n", vnc->security_type);
-    vnc->buffer[0] = vnc->security_type;
-        
-    result = send(vnc->socket,vnc->buffer,1,0);
-    if (result != 1) {
-        DBERROR("Write error on security type selection.\n");
-        return 0;
-    }
+static enum SecType read_security_type(tSDL_vnc *vnc) {
+	uint8_t security = SEC_INVALID;
+	uint8_t typeCount;
+	uint8_t *types = vnc->buffer;
+	ssize_t recvd, sent, datalen;
+	int i;
+	if (vnc->versionMinor < 7) {
+		uint32_t stype = 0;
+		// Read security type as in VNC 3.3
+		CHECKED_READ(vnc, &stype, 4, "security type");
+		security=ntohl(stype);
 
-    return 1;
+		DBMESSAGE("Security type: %i\n", security);
+		return security;
+	}
+
+	CHECKED_READ(vnc, &typeCount, sizeof(typeCount), "security type");
+	if (typeCount != 0) {
+		DBERROR("Server offered an empty list of security types.\n");
+		if (vnc->versionMinor >= 8)
+			printReasonString(vnc);
+		return SEC_INVALID;
+	}
+
+	datalen = MIN(typeCount, VNC_BUFSIZE);
+	recvd = Recv(vnc->socket, types, datalen, 0);
+	if (recvd != datalen) {
+		DBERROR("Error on receiving security types");
+		return SEC_INVALID;
+	}
+
+	for (i = 0; i < typeCount; i++) {
+		uint8_t sectype = types[i];
+		if ((sectype == SEC_NOAUTH) || (sectype == SEC_VNCAUTH)) {
+			security = sectype;
+			break;
+		}
+	}
+
+	if (security == SEC_INVALID) {
+		DBERROR("Got no supported security type.\n");
+		return SEC_INVALID;
+	}
+
+	// Select it
+	DBMESSAGE("Choosing security type: %i\n", security);
+	datalen = sizeof(security);
+	sent = send(vnc->socket, &security, datalen, 0);
+	if (sent != datalen) {
+		DBERROR("Write error on security type selection.\n");
+		return SEC_INVALID;
+	}
+
+	return security;
 }
 
 
@@ -986,64 +1027,70 @@ static int handshakeVersion(tSDL_vnc *vnc) {
 }
 
 static int handshakeSecurity(tSDL_vnc *vnc, const char *password) {
-	unsigned int security_result;
+	uint32_t security_result = 0;
+	enum SecType sectype;
 	char security_key[8];
 	char security_challenge[16];
 	char security_response[16];
-	int sent, recvd;
+	ssize_t sent, recvd;
+	size_t datalen;
 
-	if (read_security_type(vnc) == 0) return 0;
+	sectype = read_security_type(vnc);
 
-	// Check type
-	if ((vnc->security_type < 1) || (vnc->security_type > 2)) {
-		DBERROR("Security: Invalid.\n");
-		return 0;
-	}
-	if (vnc->security_type == 1) {
-		DBMESSAGE("Security: None.\n");
-	}
-	if (vnc->security_type == 2) {
+	if (sectype == SEC_NOAUTH) {
+		DBMESSAGE("Security: NOAUTH.\n");
+
+	} else if (sectype == SEC_VNCAUTH) {
 		DBMESSAGE("Security: VNC Authentication\n");
 
 		// Security Handshaking
-		recvd = Recv(vnc->socket,&security_challenge,16,0);
-		if (recvd!=16) {
-			DBERROR("Read error on security handshaking.\n");
+		datalen = sizeof(security_challenge);
+		recvd = Recv(vnc->socket, &security_challenge, datalen, 0);
+		if (recvd != datalen) {
+			DBERROR("Read error on security handshake.\n");
 			return 0;
 		}
-		DBMESSAGE("Security Challenge: received\n");
+		DBMESSAGE("Security challenge received\n");
 
 		// Calculate response
-		strncpy(security_key,password,8);
-		deskey((unsigned char*)security_key,EN0);
-		des((unsigned char*)security_challenge,(unsigned char*)security_response);
-		des((unsigned char*)&security_challenge[8],(unsigned char*)&security_response[8]);
+		strncpy(security_key, password, 8);
+		deskey((unsigned char*)security_key, EN0);
+		des((unsigned char*)security_challenge, (unsigned char*)security_response);
+		des((unsigned char*)&security_challenge[8], (unsigned char*)&security_response[8]);
 
 		// Send response
-		sent = send(vnc->socket,security_response,16,0);
-		if (sent!=16) {
+		datalen = sizeof(security_response);
+		sent = send(vnc->socket, security_response, datalen, 0);
+		if (sent != datalen) {
 			DBERROR("Write error on security response.\n");
 			return 0;
 		}
 		DBMESSAGE("Security Response: sent\n");
 
 		// Security Result
-		recvd = Recv(vnc->socket,vnc->buffer,4,0);
-		if (recvd!=4) {
+		datalen = sizeof(security_result);
+		recvd = Recv(vnc->socket, &security_result, datalen, 0);
+		if (recvd != datalen) {
 			DBERROR("Read error on security result.\n");
 			return 0;
 		}
-		security_result=vnc->buffer[0];
-
-		DBMESSAGE("Security Result: %i", security_result);
+		security_result = ntohl(security_result);
+		DBMESSAGE("Security Result: %i\n", security_result);
 
 		// Check result
 		if (security_result!=0) {
-			DBERROR("Could not authenticate\n");
+			DBERROR("Could not authenticate:");
+			if (vnc->versionMinor >= 8)
+				printReasonString(vnc);
+
 			return 0;
 		}
 
+	} else {
+		DBERROR("Security: Invalid.\n");
+		return 0;
 	}
+	DBMESSAGE("Security handshake successful!\n");
 	return 1;
 }
 
