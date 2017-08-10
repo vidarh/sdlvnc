@@ -243,7 +243,7 @@ static enum SecType read_security_type(tSDL_vnc *vnc) {
 	}
 
 	CHECKED_READ(vnc, &typeCount, sizeof(typeCount), "security type");
-	if (typeCount != 0) {
+	if (typeCount == 0) {
 		DBERROR("Server offered an empty list of security types.\n");
 		if (vnc->versionMinor >= 8)
 			printReasonString(vnc);
@@ -997,31 +997,43 @@ static int connectSocket(char *host, int port) {
 }
 
 static int handshakeVersion(tSDL_vnc *vnc) {
-	int sent, recvd;
+	ssize_t sent, recvd;
+	int major, minor;
 
 	recvd = Recv(vnc->socket,vnc->buffer,12,0);
 	if (recvd!=12) {
-		DBERROR("Read error on server version.\n");
+		DBERROR("Read error on server version. Bytes read:%d, expected: %d\n", recvd, 12);
 		return 0;
 	}
-	vnc->buffer[12]=0;
-	DBMESSAGE("Server Version: %s",vnc->buffer);
 
-	// Check major version 3
-	if (vnc->buffer[6]!='3') {
-		DBERROR("Major version mismatch. Expected 3.\n");
+	if (sscanf(vnc->buffer, "RFB %d.%d\n", &major, &minor) != 2) {
+		DBERROR("Server is not a VNC server, got reply: %s\n", vnc->buffer);
 		return 0;
 	}
-	vnc->versionMajor = 3;
-	vnc->versionMinor = vnc->buffer[10]-'0';
-	DBMESSAGE("3.x, Minor Version: %i\n",vnc->versionMinor);
 
-	// Send same version back
+	if (major != 3) {
+		DBERROR("Major version mismatch. Expected 3.x; server is %d.%d\n", major, minor);
+		return 0;
+	} else if (minor < 3) {
+		DBERROR("Version mismatch. Expected at least 3.3; server is %d.%d\n", major, minor);
+		return 0;
+	} else if (minor < 7) {
+		vnc->versionMinor = 3;
+	} else if (minor > 8) {
+		vnc->versionMinor = 8;
+	} else {
+		vnc->versionMinor = minor;
+	}
+	DBMESSAGE("Server version: %d.%d\n", major, minor);
+
+	memset(vnc->buffer, 0, recvd);
+	sprintf(vnc->buffer, "RFB %03d.%03d\n", vnc->versionMajor, vnc->versionMinor);
 	sent = send(vnc->socket,vnc->buffer,12,0);
 	if (sent!=12) {
 		DBERROR("Write error on version echo.\n");
 		return 0;
 	}
+	DBMESSAGE("Requesting version: %s", (char*) vnc->buffer);
 
 	return 1;
 }
