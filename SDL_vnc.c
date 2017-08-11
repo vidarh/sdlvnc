@@ -1102,20 +1102,19 @@ static int negotiatePixels(tSDL_vnc *vnc) {
 	packet->type = CMSG_PIXELFORMAT;
 	memset(packet->padding, 0, sizeof(packet->padding));
 
-	// Set pixel format
-	packet->format.bpp=32;
-	packet->format.depth=32;
-	packet->format.bigendian=0;
-	packet->format.truecolor=1;
-	packet->format.redmax=htons(255);
-	packet->format.greenmax=htons(255);
-	packet->format.bluemax=htons(255);
+	SDL_PixelFormat *fmt = SDL_GetVideoInfo()->vfmt;
 
-	/* FIXME: These depend on endianness; current values below works for
-	   little endian */
-	packet->format.redshift=16; // Was 0, which doesn't match vnc->rmask
-	packet->format.greenshift=8;
-	packet->format.blueshift=0; // Was 16, which doesn't match vnc->bmask
+	// Set pixel format
+	packet->format.bpp        = fmt->BitsPerPixel;
+	packet->format.depth      = fmt->BitsPerPixel;
+	packet->format.bigendian  = SDL_BYTEORDER == SDL_BIG_ENDIAN;
+	packet->format.truecolor  = fmt->palette == NULL;
+	packet->format.redmax     = htons(255);
+	packet->format.greenmax   = htons(255);
+	packet->format.bluemax    = htons(255);
+	packet->format.redshift   = fmt->Rshift;
+	packet->format.greenshift = fmt->Gshift;
+	packet->format.blueshift  = fmt->Bshift;
 	memset(packet->format.padding, 0, sizeof(packet->format.padding));
 
 	static_assert(sizeof(*packet) == 20, "Packet holding pixel format should be 20 bytes.");
