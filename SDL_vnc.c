@@ -91,6 +91,31 @@ void blit_raw(tSDL_vnc * vnc, tSDL_vnc_rect rect);
     } \
     }
 
+#define ASSERT_SIZE(e,s) static_assert(sizeof(e) == (s), #e" must be "#s" bytes!")
+
+ASSERT_SIZE(tSDL_vnc_rect, 8);
+ASSERT_SIZE(tSDL_vnc_pixelFormat, 16);
+ASSERT_SIZE(tSDL_vnc_serverFormat, 24 + VNC_BUFSIZE);
+ASSERT_SIZE(tSDL_vnc_updateRequest, 10);
+ASSERT_SIZE(tSDL_vnc_serverMessage, 1);
+ASSERT_SIZE(tSDL_vnc_serverUpdate, 3);
+ASSERT_SIZE(tSDL_vnc_serverRectangle, 12);
+ASSERT_SIZE(tSDL_vnc_serverColormap, 5);
+ASSERT_SIZE(tSDL_vnc_serverText, 7);
+ASSERT_SIZE(tSDL_vnc_serverCopyrect, 4);
+ASSERT_SIZE(tSDL_vnc_serverRRE, 8);
+ASSERT_SIZE(tSDL_vnc_serverRREdata, 12);
+ASSERT_SIZE(tSDL_vnc_serverHextile, 1);
+ASSERT_SIZE(tSDL_vnc_serverHextileBg, 4);
+ASSERT_SIZE(tSDL_vnc_serverHextileFg, 4);
+ASSERT_SIZE(tSDL_vnc_serverHextileSubrects, 1);
+ASSERT_SIZE(tSDL_vnc_serverHextileColored8bpp, 3);
+ASSERT_SIZE(tSDL_vnc_serverHextileColored16bpp, 4);
+ASSERT_SIZE(tSDL_vnc_serverHextileColored32bpp, 6);
+ASSERT_SIZE(tSDL_vnc_serverHextileRect, 2);
+ASSERT_SIZE(tSDL_vnc_clientKeyevent, 8);
+ASSERT_SIZE(tSDL_vnc_clientPointerevent, 6);
+
 typedef enum ClientMsgType {
 	CMSG_PIXELFORMAT  = 0,
 	CMSG_SETENCODINGS = 2,
@@ -156,13 +181,19 @@ void GrowUpdateRegion(tSDL_vnc *vnc, SDL_Rect *trec)
 	}
 }
 
+/* Length of buffer with current bpp */
+static ssize_t frameLen(tSDL_vnc *vnc, int dim)
+{
+	return vnc->bpp/8 * dim;
+}
+
 
 static int handleHextile(tSDL_vnc *vnc) {
     DBMESSAGE("Hextile encoding.\n");
     //
     if (!(vnc->tilebuffer)) {
         // Create new tilebuffer
-        vnc->tilebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,16,16,32,vnc->rmask,vnc->gmask,vnc->bmask,0);
+        vnc->tilebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,16,16,vnc->bpp,vnc->rmask,vnc->gmask,vnc->bmask,0);
         if (vnc->tilebuffer) {
             SDL_SetAlpha(vnc->tilebuffer,0,0);
             DBMESSAGE("Created new tilebuffer.\n");
@@ -335,7 +366,7 @@ static int ServerRectangle_Raw(tSDL_vnc * vnc,
     if (serverRectangle.width == vnc->framebuffer->pitch / 4) {
         if (read_raw(vnc, serverRectangle) == 0) return 0;
     } else {
-        int bytes_to_read = serverRectangle.width*serverRectangle.height*4;
+        int bytes_to_read = frameLen(vnc, serverRectangle.width*serverRectangle.height);
         CHECKED_READ(vnc, (unsigned char *)vnc->rawbuffer, bytes_to_read, "pixel data");
         DBMESSAGE("Blitting %i bytes of raw pixel data.\n",bytes_to_read);
         blit_raw(vnc,serverRectangle);
@@ -380,7 +411,7 @@ static int ServerRectangle_Cursor(tSDL_vnc * vnc,
     vnc->cursorhotspot.x = rect.x;
     vnc->cursorhotspot.y = rect.y;
 
-    int bytes_to_read = rect.width*rect.height*4;
+    int bytes_to_read = frameLen(vnc, rect.width*rect.height);
     
     CHECKED_READ(vnc, (unsigned char *)vnc->scratchbuffer->pixels,bytes_to_read, "cursor data");
     DBMESSAGE("Read cursor pixel data %u byte.\n",bytes_to_read);
@@ -410,7 +441,7 @@ static int ServerRectangle_Cursor(tSDL_vnc * vnc,
             bitindex=cx % 8;
             *target = (cursormask[byteindex] & bitfield[bitindex]) ? 255 : 0;
             if (bitindex==7) byteindex++;
-            target += 4;
+            target += frameLen(vnc,1);
         } // cx loop
         if (bitindex<7) byteindex++;
     } // cy loop
@@ -480,7 +511,7 @@ static int ServerRectangle_HexTile(tSDL_vnc * vnc,
 
             if (serverHextile.mode & 1) {
                 // Read raw data for tile in lines
-                int bytes_to_read = bx*by*4;
+                int bytes_to_read = frameLen(vnc, bx*by);
                 int result = 0;
                 if ((bx == 16) && (by == 16)) {
                     // complete tile
@@ -490,8 +521,8 @@ static int ServerRectangle_HexTile(tSDL_vnc * vnc,
                     unsigned char * target =(unsigned char *)vnc->tilebuffer->pixels;
                     int rowindex=by;
                     while (rowindex) {
-                        result += recv(vnc->socket,target,bx*4,MSG_WAITALL);
-                        target += 16*4;
+                        result += recv(vnc->socket,target,frameLen(vnc, bx),MSG_WAITALL);
+                        target += frameLen(vnc, 16);
                         rowindex--;
                     }
                 }
@@ -510,11 +541,11 @@ static int ServerRectangle_HexTile(tSDL_vnc * vnc,
                 
                 // no raw data
                 if (serverHextile.mode & 2) {
-                    CHECKED_READ(vnc, &serverHextileBg, 4, "hextile background");
+                    CHECKED_READ(vnc, &serverHextileBg, frameLen(vnc, 1), "hextile background");
                 }
                 SDL_FillRect(vnc->tilebuffer,NULL,serverHextileBg.color);
                 if (serverHextile.mode & 4) {
-                    CHECKED_READ(vnc, &serverHextileFg, 4, "hextile foreground");
+                    CHECKED_READ(vnc, &serverHextileFg, frameLen(vnc, 1), "hextile foreground");
                 }
                 if (serverHextile.mode & 8) {
                     tSDL_vnc_serverHextileSubrects serverHextileSubrects;
@@ -525,12 +556,29 @@ static int ServerRectangle_HexTile(tSDL_vnc * vnc,
                         num_subrectangles++;
                         // Check color mode
                         if (serverHextile.mode & 16) {
-                            tSDL_vnc_serverHextileColored serverHextileColored;
-                            
-                            // Colored subrect
-                            CHECKED_READ(vnc, &serverHextileColored,6, "hextile color subrect data");
-                            vnc_hextile_to_sdl_rect(serverHextileColored.xy, serverHextileColored.wh, &srec);
-                            SDL_FillRect(vnc->tilebuffer,&srec,serverHextileColored.color);
+#define READ_HEXTILE(bpp)   tSDL_vnc_serverHextileColored ## bpp serverHextileColored;\
+																						\
+							CHECKED_READ(vnc, &serverHextileColored, sizeof(serverHextileColored), "hextile color subrect data");\
+							vnc_hextile_to_sdl_rect(serverHextileColored.xy, serverHextileColored.wh, &srec);\
+							SDL_FillRect(vnc->tilebuffer,&srec,serverHextileColored.color);
+
+							switch (vnc->bpp) {
+								case 8:  {
+											 READ_HEXTILE(8bpp);
+										 }
+										 break;
+								case 16: {
+											 READ_HEXTILE(16bpp);
+										 }
+										 break;
+								case 32: {
+											 READ_HEXTILE(32bpp);
+										 }
+										 break;
+								default:
+									DBERROR("Unsuppored bit depth!");
+									return 0;
+							}
                         } else {
                             // Non-colored Subrect
                             tSDL_vnc_serverHextileRect serverHextileRect;
@@ -609,7 +657,7 @@ static int PrepScratchBuffer(tSDL_vnc *vnc,
     }
     if (!(vnc->scratchbuffer)) {
         // Create new scratchbuffer
-        vnc->scratchbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,serverRectangle.width,serverRectangle.height,32,vnc->rmask,vnc->gmask,vnc->bmask,0);
+        vnc->scratchbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,serverRectangle.width,serverRectangle.height,vnc->bpp,vnc->rmask,vnc->gmask,vnc->bmask,0);
         if (vnc->scratchbuffer) {
             SDL_SetAlpha(vnc->scratchbuffer,0,0);
             DBMESSAGE("Created new scratchbuffer w=%d,h=%d\n", serverRectangle.width, serverRectangle.height);
@@ -630,7 +678,8 @@ static int HandleServerMessage_update(tSDL_vnc *vnc)
     CHECKED_READ(vnc, &serverUpdate, 3, "server update");
 
     /* ??? Protocol sais U16, TightVNC server sends U8 */
-    serverUpdate.rectangles=serverUpdate.rectangles & 0x00ff;
+    //serverUpdate.rectangles=serverUpdate.rectangles & 0x00ff;
+    serverUpdate.rectangles = ntohs(serverUpdate.rectangles);
     DBMESSAGE("Number of rectangles: %u (%04x)\n",serverUpdate.rectangles,serverUpdate.rectangles);
     
     int num_rectangles=0;
@@ -686,7 +735,7 @@ static int HandleServerMessage_text(tSDL_vnc *vnc)
     DBMESSAGE("Message: text\n");
 	tSDL_vnc_serverText serverText;
 
-    CHECKED_READ(vnc, &serverText,5, "text");
+    CHECKED_READ(vnc, &serverText,7, "text");
     serverText.length=ntohl(serverText.length);
 
     DBMESSAGE("Server text length: %u\n",serverText.length);
@@ -881,16 +930,7 @@ static int initVNC(tSDL_vnc *vnc, int framerate) {
 	vnc->tilebuffer=NULL;
 	vnc->cursorbuffer=NULL;
 
-	DBMESSAGE("Allocating %ld bytes for rawbuffer\n", RAWBUFFER_WIDTH * 4 * RAWBUFFER_HEIGHT);
-	if(!(vnc->rawbuffer = malloc(RAWBUFFER_WIDTH * 4 * RAWBUFFER_HEIGHT))) {
-		free(vnc->clientbuffer);
-		free(vnc->buffer);
-		DBERROR("Out of memory allocating rawbuffer.\n");
-		return 0;
-	}
-
 	if(!(vnc->serverFormat = calloc(sizeof(*vnc->serverFormat), 1))) {
-		free(vnc->rawbuffer);
 		free(vnc->clientbuffer);
 		free(vnc->buffer);
 		DBERROR("Out of memory allocating serverFormat.\n");
@@ -901,7 +941,6 @@ static int initVNC(tSDL_vnc *vnc, int framerate) {
 		free(vnc->serverFormat);
 		free(vnc->clientbuffer);
 		free(vnc->buffer);
-		free(vnc->rawbuffer);
 		DBERROR("Out of memory allocating serverFormat.\n");
 		return 0;
 	}
@@ -1092,6 +1131,13 @@ struct setPixelFormat {
 	tSDL_vnc_pixelFormat format;
 };
 
+static Uint16 colorMax(Uint32 mask, Uint8 shift, Uint8 loss)
+{
+	Uint16 tmp = mask;
+	tmp >>= shift;
+	return tmp;
+}
+
 static int negotiatePixels(tSDL_vnc *vnc) {
 	struct setPixelFormat *packet = vnc->buffer;
 	ssize_t sent, datalen;
@@ -1102,16 +1148,21 @@ static int negotiatePixels(tSDL_vnc *vnc) {
 	packet->type = CMSG_PIXELFORMAT;
 	memset(packet->padding, 0, sizeof(packet->padding));
 
-	SDL_PixelFormat *fmt = SDL_GetVideoInfo()->vfmt;
+	SDL_PixelFormat *fmt = SDL_GetVideoSurface()->format;
+	vnc->bpp = fmt->BitsPerPixel;
+	vnc->rmask = fmt->Rmask;
+	vnc->gmask = fmt->Gmask;
+	vnc->bmask = fmt->Bmask;
+	vnc->amask = fmt->Amask;
 
 	// Set pixel format
 	packet->format.bpp        = fmt->BitsPerPixel;
 	packet->format.depth      = fmt->BitsPerPixel;
 	packet->format.bigendian  = SDL_BYTEORDER == SDL_BIG_ENDIAN;
 	packet->format.truecolor  = fmt->palette == NULL;
-	packet->format.redmax     = htons(255);
-	packet->format.greenmax   = htons(255);
-	packet->format.bluemax    = htons(255);
+	packet->format.redmax     = htons(colorMax(fmt->Rmask, fmt->Rshift, fmt->Rloss));
+	packet->format.greenmax   = htons(colorMax(fmt->Gmask, fmt->Gshift, fmt->Gloss));
+	packet->format.bluemax    = htons(colorMax(fmt->Bmask, fmt->Bshift, fmt->Bloss));
 	packet->format.redshift   = fmt->Rshift;
 	packet->format.greenshift = fmt->Gshift;
 	packet->format.blueshift  = fmt->Bshift;
@@ -1208,24 +1259,15 @@ static int negotiateEncodings(tSDL_vnc *vnc, const char *modes) {
 
 static int postInit(tSDL_vnc *vnc) {
 	// Create framebuffer
-#if SDL_BYTEORDER == SDL_BIG_ENDIAN
-	DBMESSAGE("Client is: big-endian\n");
-	vnc->rmask = 0xff000000;
-	vnc->gmask = 0x00ff0000;
-	vnc->bmask = 0x0000ff00;
-	vnc->amask = 0x000000ff;
-#else
-	// Pre
-	DBMESSAGE("Client is: little-endian\n");
-	//@FIXME: Strange... Palm Pre needs reversed R <-> B order! Maybe check "if(SDL_BYTEORDER == SDL_LIL_ENDIAN)"
-	vnc->rmask = 0x00ff0000;
-	vnc->gmask = 0x0000ff00;
-	vnc->bmask = 0x000000ff;
-	vnc->amask = 0xff000000;
+	DBMESSAGE("Allocating %lu bytes for rawbuffer\n", frameLen(vnc, RAWBUFFER_WIDTH*RAWBUFFER_HEIGHT));
+	if(!(vnc->rawbuffer = calloc(RAWBUFFER_WIDTH * RAWBUFFER_HEIGHT, frameLen(vnc, 1)))) {
+		DBERROR("Out of memory allocating rawbuffer.\n");
+		return 0;
+	}
 
-#endif
-	vnc->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,vnc->serverFormat->width,vnc->serverFormat->height,32,vnc->rmask,vnc->gmask,vnc->bmask,0);
+	vnc->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,vnc->serverFormat->width,vnc->serverFormat->height,vnc->bpp,vnc->rmask,vnc->gmask,vnc->bmask,0);
 	if (!vnc->framebuffer) {
+		free(vnc->rawbuffer);
 		DBERROR("Could not create framebuffer.\n");
 		return 0;
 	}
@@ -1240,7 +1282,7 @@ static int postInit(tSDL_vnc *vnc) {
 	vnc->updatedRect.h=vnc->serverFormat->height;
 
 	// Create 32x32 cursorbuffer (with alpha)
-	vnc->cursorbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,32,32,32,vnc->rmask,vnc->gmask,vnc->bmask,vnc->amask);
+	vnc->cursorbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,32,32,vnc->bpp,vnc->rmask,vnc->gmask,vnc->bmask,vnc->amask);
 	SDL_SetAlpha(vnc->cursorbuffer,SDL_SRCALPHA,0);
 	if (vnc->cursorbuffer==NULL) {
 		DBERROR("Could not create cursorbuffer.\n");

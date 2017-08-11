@@ -47,26 +47,32 @@ typedef struct tSDL_vnc_serverMessage {
 	uint8_t messagetype;
 } tSDL_vnc_serverMessage;
 
+#pragma pack(push, 1)
 typedef struct tSDL_vnc_serverUpdate {
 	uint8_t padding;
 	uint16_t rectangles;
 } tSDL_vnc_serverUpdate;
+#pragma pack(pop)
 
 typedef struct tSDL_vnc_serverRectangle {
 	tSDL_vnc_rect rect;
 	unsigned int encoding;
 } tSDL_vnc_serverRectangle;
 
+#pragma pack(push, 1)
 typedef struct tSDL_vnc_serverColormap {
 	uint8_t padding;
 	uint16_t first;
 	uint16_t number;
 } tSDL_vnc_serverColormap;
+#pragma pack(pop)
 
+#pragma pack(push, 1)
 typedef struct tSDL_vnc_serverText {
 	uint8_t padding[3];
 	uint32_t length;
 } tSDL_vnc_serverText;
+#pragma pack(pop)
 
 typedef struct tSDL_vnc_serverCopyrect {
 	uint16_t x;
@@ -99,11 +105,25 @@ typedef struct tSDL_vnc_serverHextileSubrects {
 	uint8_t number;
 } tSDL_vnc_serverHextileSubrects;
 
-typedef struct tSDL_vnc_serverHextileColored {
+#pragma pack(push, 1)
+typedef struct tSDL_vnc_serverHextileColored8bpp {
+	uint8_t color;
+	uint8_t xy;
+	uint8_t wh;
+} tSDL_vnc_serverHextileColored8bpp;
+
+typedef struct tSDL_vnc_serverHextileColored16bpp {
+	uint16_t color;
+	uint8_t xy;
+	uint8_t wh;
+} tSDL_vnc_serverHextileColored16bpp;
+
+typedef struct tSDL_vnc_serverHextileColored32bpp {
 	uint32_t color;
 	uint8_t xy;
 	uint8_t wh;
-} tSDL_vnc_serverHextileColored;
+} tSDL_vnc_serverHextileColored32bpp;
+#pragma pack(pop)
 
 typedef struct tSDL_vnc_serverHextileRect {
 	uint8_t xy;

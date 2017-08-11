@@ -81,6 +81,7 @@ typedef struct tSDL_vnc_updateRequest tSDL_vnc_updateRequest;
 		SDL_Surface *framebuffer;		// RGB surface of framebuffer
 		SDL_Surface *scratchbuffer;		// workbuffer for encodings
 		SDL_Surface *tilebuffer;		// workbuffer for encodings
+		uint8_t bpp;
 
         uint32_t * rawbuffer;           // Raw pixel buffer. To replace scratchbuffer
 		
