@@ -1057,8 +1057,33 @@ static int handshakeVersion(tSDL_vnc *vnc) {
 	return 1;
 }
 
+static int getSecurityResult(tSDL_vnc *vnc)
+{
+	uint32_t security_result;
+	ssize_t datalen, recvd;
+
+	datalen = sizeof(security_result);
+	recvd = recv(vnc->socket, &security_result, datalen, MSG_WAITALL);
+	if (recvd != datalen) {
+		DBERROR("Read error on security result.\n");
+		return 0;
+	}
+	security_result = ntohl(security_result);
+	DBMESSAGE("Security Result: %i\n", security_result);
+
+	// Check result
+	if (security_result!=0) {
+		DBERROR("Could not authenticate:");
+		if (vnc->versionMinor >= 8)
+			printReasonString(vnc);
+
+		return 0;
+	}
+
+	return 1;
+}
+
 static int handshakeSecurity(tSDL_vnc *vnc, const char *password) {
-	uint32_t security_result = 0;
 	enum SecType sectype;
 	char security_key[8];
 	char security_challenge[16];
@@ -1070,6 +1095,9 @@ static int handshakeSecurity(tSDL_vnc *vnc, const char *password) {
 
 	if (sectype == SEC_NOAUTH) {
 		DBMESSAGE("Security: NOAUTH.\n");
+
+		if (vnc->versionMajor == 3 && vnc->versionMinor >= 8)
+			return getSecurityResult(vnc);
 
 	} else if (sectype == SEC_VNCAUTH) {
 		DBMESSAGE("Security: VNC Authentication\n");
@@ -1097,25 +1125,7 @@ static int handshakeSecurity(tSDL_vnc *vnc, const char *password) {
 			return 0;
 		}
 		DBMESSAGE("Security Response: sent\n");
-
-		// Security Result
-		datalen = sizeof(security_result);
-		recvd = recv(vnc->socket, &security_result, datalen, MSG_WAITALL);
-		if (recvd != datalen) {
-			DBERROR("Read error on security result.\n");
-			return 0;
-		}
-		security_result = ntohl(security_result);
-		DBMESSAGE("Security Result: %i\n", security_result);
-
-		// Check result
-		if (security_result!=0) {
-			DBERROR("Could not authenticate:");
-			if (vnc->versionMinor >= 8)
-				printReasonString(vnc);
-
-			return 0;
-		}
+		return getSecurityResult(vnc);
 
 	} else {
 		DBERROR("Security: Invalid.\n");
