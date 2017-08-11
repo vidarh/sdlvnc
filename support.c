@@ -9,6 +9,7 @@
 
 #include "SDL_vnc.h"
 #include "SDL_vnc_private.h"
+#include <sys/socket.h>
 
 #ifdef DEBUG
 	#define DBMESSAGE 	printf
@@ -17,7 +18,7 @@
 #endif
 
 #define CHECKED_READ(vnc, dest, len, message) { \
-    int result = Recv(vnc->socket, dest, len, 0); \
+    int result = recv(vnc->socket, dest, len, MSG_WAITALL); \
     if (result!=len) { \
     printf("Error reading %s. Got %i of %i bytes.\n", message, result, len); \
     return 0; \

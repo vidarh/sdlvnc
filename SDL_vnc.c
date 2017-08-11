@@ -88,7 +88,7 @@ void blit_raw(tSDL_vnc * vnc, tSDL_vnc_rect rect);
 #define ARRSIZE(a) (sizeof(a)/sizeof(a[0]))
 
 #define CHECKED_READ(vnc, dest, len, message) { \
-    int result = Recv(vnc->socket, dest, len, 0); \
+    int result = recv(vnc->socket, dest, len, MSG_WAITALL); \
     if (result!=len) { \
     printf("Error reading %s. Got %i of %i bytes.\n", message, result, len); \
     return 0; \
@@ -135,23 +135,6 @@ static int WaitForMessage(tSDL_vnc *vnc, unsigned int usecs)
 #endif
 	
 	return result;
-}
-
-int Recv(int s, void *buf, size_t len, int flags)
-{
-	unsigned char *target=buf;
-	size_t to_read=len;
-	int result;
-
-	while (to_read>0) {
-		result = recv(s,target,to_read,flags);
-		if (result<0) return result;
-		if (result==0) return (len-to_read);
-		to_read -= result;
-		target += result;
-	}
-
-	return len ;
 }
 
 void GrowUpdateRegion(tSDL_vnc *vnc, SDL_Rect *trec)
@@ -205,7 +188,7 @@ static void printReasonString(tSDL_vnc *vnc) {
 	uint32_t size = 0;
 	ssize_t recvd, total;
 
-	recvd = Recv(vnc->socket, &size, sizeof(size), 0);
+	recvd = recv(vnc->socket, &size, sizeof(size), MSG_WAITALL);
 	if (recvd != 4) {
 		DBERROR("Read error on reason.\n");
 		return;
@@ -215,7 +198,7 @@ static void printReasonString(tSDL_vnc *vnc) {
 	DBERROR("Reason: ");
 	for (total = 0; total < size; total += recvd) {
 		memset(vnc->buffer, 0, VNC_BUFSIZE);
-		recvd = Recv(vnc->socket, vnc->buffer, MIN(size, VNC_BUFSIZE-1), 0);
+		recvd = recv(vnc->socket, vnc->buffer, MIN(size, VNC_BUFSIZE-1), MSG_WAITALL);
 		if (recvd <= 0)
 			break;
 		printf(vnc->buffer);
@@ -252,7 +235,7 @@ static enum SecType read_security_type(tSDL_vnc *vnc) {
 	}
 
 	datalen = MIN(typeCount, VNC_BUFSIZE);
-	recvd = Recv(vnc->socket, types, datalen, 0);
+	recvd = recv(vnc->socket, types, datalen, MSG_WAITALL);
 	if (recvd != datalen) {
 		DBERROR("Error on receiving security types");
 		return SEC_INVALID;
@@ -505,13 +488,13 @@ static int ServerRectangle_HexTile(tSDL_vnc * vnc,
                 int result = 0;
                 if ((bx == 16) && (by == 16)) {
                     // complete tile
-                    result = Recv(vnc->socket,(unsigned char *)vnc->tilebuffer->pixels,bytes_to_read,0);
+                    result = recv(vnc->socket,(unsigned char *)vnc->tilebuffer->pixels,bytes_to_read,MSG_WAITALL);
                 } else {
                     // partial tile
                     unsigned char * target =(unsigned char *)vnc->tilebuffer->pixels;
                     int rowindex=by;
                     while (rowindex) {
-                        result += Recv(vnc->socket,target,bx*4,0);
+                        result += recv(vnc->socket,target,bx*4,MSG_WAITALL);
                         target += 16*4;
                         rowindex--;
                     }
@@ -582,7 +565,7 @@ static int ServerRectangle_HexTile(tSDL_vnc * vnc,
 int ReadServerRectangle(tSDL_vnc * vnc,
                         tSDL_vnc_serverRectangle * serverRectangle)
 {
-    int result = Recv(vnc->socket,serverRectangle,12,0);
+    int result = recv(vnc->socket,serverRectangle,12,MSG_WAITALL);
     if (result!=12) return 0;
 
     vnc_rect_swap(&serverRectangle->rect);
@@ -717,7 +700,7 @@ static int HandleServerMessage_text(tSDL_vnc *vnc)
             serverText.length=1;
     }
     while (serverText.length>0) {
-        int result = Recv(vnc->socket,vnc->buffer,serverText.length % VNC_BUFSIZE,0);
+        int result = recv(vnc->socket,vnc->buffer,serverText.length % VNC_BUFSIZE,MSG_WAITALL);
         if (result <= 0) {
             serverText.length=0;
         } else {
@@ -834,7 +817,7 @@ int vncClientThread (void *data) {
 
 static int vncReadServerFormat(tSDL_vnc *vnc) {
     // Server Initialiazation
-    int result = Recv(vnc->socket,vnc->serverFormat,24,0);
+    int result = recv(vnc->socket,vnc->serverFormat,24,MSG_WAITALL);
     if (result==24) {
         // Swap format numbers
         vnc->serverFormat->width      =swap_16(vnc->serverFormat->width);
@@ -870,7 +853,7 @@ static int vncReadServerFormat(tSDL_vnc *vnc) {
         return 0;
     }
     if (vnc->serverFormat->namelength>1) {
-        result = Recv(vnc->socket,vnc->serverFormat->name,vnc->serverFormat->namelength,0);
+        result = recv(vnc->socket,vnc->serverFormat->name,vnc->serverFormat->namelength,MSG_WAITALL);
         if (result==vnc->serverFormat->namelength) {
             vnc->serverFormat->name[vnc->serverFormat->namelength]=0;
             DBMESSAGE("Desktop name: %s\n",vnc->serverFormat->name);
@@ -1001,7 +984,7 @@ static int handshakeVersion(tSDL_vnc *vnc) {
 	ssize_t sent, recvd;
 	int major, minor;
 
-	recvd = Recv(vnc->socket,vnc->buffer,12,0);
+	recvd = recv(vnc->socket,vnc->buffer,12,MSG_WAITALL);
 	if (recvd!=12) {
 		DBERROR("Read error on server version. Bytes read:%d, expected: %d\n", recvd, 12);
 		return 0;
@@ -1058,7 +1041,7 @@ static int handshakeSecurity(tSDL_vnc *vnc, const char *password) {
 
 		// Security Handshaking
 		datalen = sizeof(security_challenge);
-		recvd = Recv(vnc->socket, &security_challenge, datalen, 0);
+		recvd = recv(vnc->socket, &security_challenge, datalen, MSG_WAITALL);
 		if (recvd != datalen) {
 			DBERROR("Read error on security handshake.\n");
 			return 0;
@@ -1082,7 +1065,7 @@ static int handshakeSecurity(tSDL_vnc *vnc, const char *password) {
 
 		// Security Result
 		datalen = sizeof(security_result);
-		recvd = Recv(vnc->socket, &security_result, datalen, 0);
+		recvd = recv(vnc->socket, &security_result, datalen, MSG_WAITALL);
 		if (recvd != datalen) {
 			DBERROR("Read error on security result.\n");
 			return 0;
