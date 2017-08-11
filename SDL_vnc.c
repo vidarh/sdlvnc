@@ -50,12 +50,8 @@ void blit_raw(tSDL_vnc * vnc, tSDL_vnc_rect rect);
 /* Endian dependent routines/data */
 
 #if SDL_BYTEORDER == SDL_BIG_ENDIAN
-#define swap_16(x) (x)
-	#define swap_32(x) (x)
 	unsigned char bitfield[8]={1,2,4,8,16,32,64,128};
 #else
-	#define swap_16(x) ((((x) & 0xff) << 8) | (((x) >> 8) & 0xff))
-	#define swap_32(x) (((x) >> 24) | (((x) & 0x00ff0000) >> 8)  | (((x) & 0x0000ff00) << 8)  | ((x) << 24))
 	unsigned char bitfield[8]={128,64,32,16,8,4,2,1};
 #endif
 
@@ -275,8 +271,8 @@ static int HandleServerMessage_colormap(tSDL_vnc * vnc)
     // Read data, but ignore it
     CHECKED_READ(vnc, &serverColormap, 5, "server colormap");
 
-    serverColormap.first=swap_16(serverColormap.first);
-    serverColormap.number=swap_16(serverColormap.number);
+    serverColormap.first=ntohs(serverColormap.first);
+    serverColormap.number=ntohs(serverColormap.number);
 
     DBMESSAGE("Server colormap first color: %u\n",serverColormap.first);
     DBMESSAGE("Server colormap number: %u\n",serverColormap.number);
@@ -309,10 +305,10 @@ static inline void vnc_hextile_to_sdl_rect(uint8_t xy, uint8_t wh, SDL_Rect * de
 
 static inline void vnc_rect_swap(tSDL_vnc_rect * rect)
 {
-    rect->x = swap_16(rect->x);
-    rect->y = swap_16(rect->y);
-    rect->width  = swap_16(rect->width);
-    rect->height = swap_16(rect->height);
+    rect->x = ntohs(rect->x);
+    rect->y = ntohs(rect->y);
+    rect->width  = ntohs(rect->width);
+    rect->height = ntohs(rect->height);
 }
 
 static void blit_scratch(tSDL_vnc * vnc, tSDL_vnc_rect rect)
@@ -358,8 +354,8 @@ static int ServerRectangle_CopyRect(tSDL_vnc * vnc,
     CHECKED_READ(vnc, &serverCopyrect, 4, "copyrect");
 
     SDL_Rect trec, srec;
-    srec.x=swap_16(serverCopyrect.x);
-    srec.y=swap_16(serverCopyrect.y);
+    srec.x=ntohs(serverCopyrect.x);
+    srec.y=ntohs(serverCopyrect.y);
     DBMESSAGE("Copyrect from %u,%u\n",srec.x,srec.y);
     srec.w=serverRectangle.width;
     srec.h=serverRectangle.height;
@@ -432,7 +428,7 @@ static int ServerRectangle_RRE(tSDL_vnc * vnc,
 	tSDL_vnc_serverRREdata serverRREdata;
     DBMESSAGE("RRE encoding.\n");
     CHECKED_READ(vnc, &serverRRE, 8, "RRE header");
-    serverRRE.number=swap_32(serverRRE.number);
+    serverRRE.number=ntohl(serverRRE.number);
 
     DBMESSAGE("RRE of %u rectangles. Background color 0x%06x\n",serverRRE.number,serverRRE.background);
 
@@ -569,7 +565,7 @@ int ReadServerRectangle(tSDL_vnc * vnc,
     if (result!=12) return 0;
 
     vnc_rect_swap(&serverRectangle->rect);
-    serverRectangle->encoding=swap_32(serverRectangle->encoding);
+    serverRectangle->encoding=ntohl(serverRectangle->encoding);
 
     DBMESSAGE("    @ %u,%u size %u,%u encoding %u\n",serverRectangle->rect.x,serverRectangle->rect.y,serverRectangle->rect.width,serverRectangle->rect.height,serverRectangle->encoding);
     
@@ -691,7 +687,7 @@ static int HandleServerMessage_text(tSDL_vnc *vnc)
 	tSDL_vnc_serverText serverText;
 
     CHECKED_READ(vnc, &serverText,5, "text");
-    serverText.length=swap_32(serverText.length);
+    serverText.length=ntohl(serverText.length);
 
     DBMESSAGE("Server text length: %u\n",serverText.length);
     // ??? Protocol sais U16 is length to read
@@ -820,12 +816,12 @@ static int vncReadServerFormat(tSDL_vnc *vnc) {
     int result = recv(vnc->socket,vnc->serverFormat,24,MSG_WAITALL);
     if (result==24) {
         // Swap format numbers
-        vnc->serverFormat->width      =swap_16(vnc->serverFormat->width);
-        vnc->serverFormat->height     =swap_16(vnc->serverFormat->height);
-        vnc->serverFormat->pixel_format.redmax     =swap_16(vnc->serverFormat->pixel_format.redmax);
-        vnc->serverFormat->pixel_format.greenmax   =swap_16(vnc->serverFormat->pixel_format.greenmax);
-        vnc->serverFormat->pixel_format.bluemax    =swap_16(vnc->serverFormat->pixel_format.bluemax);
-        vnc->serverFormat->namelength =swap_32(vnc->serverFormat->namelength);
+        vnc->serverFormat->width      =ntohs(vnc->serverFormat->width);
+        vnc->serverFormat->height     =ntohs(vnc->serverFormat->height);
+        vnc->serverFormat->pixel_format.redmax     =ntohs(vnc->serverFormat->pixel_format.redmax);
+        vnc->serverFormat->pixel_format.greenmax   =ntohs(vnc->serverFormat->pixel_format.greenmax);
+        vnc->serverFormat->pixel_format.bluemax    =ntohs(vnc->serverFormat->pixel_format.bluemax);
+        vnc->serverFormat->namelength =ntohl(vnc->serverFormat->namelength);
         // Info
         DBMESSAGE("Format Width: %u (0x%04x)\n",vnc->serverFormat->width,vnc->serverFormat->width);
         DBMESSAGE("Format Height: %u (0x%04x)\n",vnc->serverFormat->height,vnc->serverFormat->height);
@@ -1457,7 +1453,7 @@ int vncClientKeyevent(tSDL_vnc *vnc, unsigned char downflag, unsigned int key)
 	if (vnc->clientbufferpos<(VNC_BUFSIZE-8)) {
 		clientKeyevent.messagetype=4;
 		clientKeyevent.downflag=downflag;
-		clientKeyevent.key=swap_32(key);
+		clientKeyevent.key=ntohl(key);
 		memcpy(vnc->clientbuffer + vnc->clientbufferpos, &clientKeyevent, 8);
 		vnc->clientbufferpos += 8;
 		result = 1;
@@ -1478,8 +1474,8 @@ int vncClientPointerevent(tSDL_vnc *vnc, unsigned char buttonmask, unsigned shor
 	if (vnc->clientbufferpos<(VNC_BUFSIZE-6)) {
 		clientPointerevent.messagetype=5;
 		clientPointerevent.buttonmask=buttonmask;
-		clientPointerevent.x=swap_16(x);
-		clientPointerevent.y=swap_16(y);
+		clientPointerevent.x=ntohs(x);
+		clientPointerevent.y=ntohs(y);
 		memcpy(vnc->clientbuffer + vnc->clientbufferpos, &clientPointerevent, 6);
 		vnc->clientbufferpos += 6;
 		result = 1;
