@@ -1131,11 +1131,9 @@ struct setPixelFormat {
 	tSDL_vnc_pixelFormat format;
 };
 
-static Uint16 colorMax(Uint32 mask, Uint8 shift, Uint8 loss)
+static Uint16 colorMax(Uint32 mask, Uint8 shift)
 {
-	Uint16 tmp = mask;
-	tmp >>= shift;
-	return tmp;
+	return mask >> shift;
 }
 
 static int negotiatePixels(tSDL_vnc *vnc) {
@@ -1160,9 +1158,9 @@ static int negotiatePixels(tSDL_vnc *vnc) {
 	packet->format.depth      = fmt->BitsPerPixel;
 	packet->format.bigendian  = SDL_BYTEORDER == SDL_BIG_ENDIAN;
 	packet->format.truecolor  = fmt->palette == NULL;
-	packet->format.redmax     = htons(colorMax(fmt->Rmask, fmt->Rshift, fmt->Rloss));
-	packet->format.greenmax   = htons(colorMax(fmt->Gmask, fmt->Gshift, fmt->Gloss));
-	packet->format.bluemax    = htons(colorMax(fmt->Bmask, fmt->Bshift, fmt->Bloss));
+	packet->format.redmax     = htons(colorMax(fmt->Rmask, fmt->Rshift));
+	packet->format.greenmax   = htons(colorMax(fmt->Gmask, fmt->Gshift));
+	packet->format.bluemax    = htons(colorMax(fmt->Bmask, fmt->Bshift));
 	packet->format.redshift   = fmt->Rshift;
 	packet->format.greenshift = fmt->Gshift;
 	packet->format.blueshift  = fmt->Bshift;
