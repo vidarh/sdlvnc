@@ -34,8 +34,10 @@ Butchered by Vidar Hokstad, vidar@hokstad.com
 #include <errno.h>
 #include <string.h>
 #include <sys/types.h>
+#include <assert.h>
 
 #include "SDL_vnc.h"
+#include "SDL_vnc_private.h"
 #include "d3des.h"
 
 // FIXME: Currently these need to be larger than maximum used buffer
@@ -48,12 +50,8 @@ void blit_raw(tSDL_vnc * vnc, tSDL_vnc_rect rect);
 /* Endian dependent routines/data */
 
 #if SDL_BYTEORDER == SDL_BIG_ENDIAN
-#define swap_16(x) (x)
-	#define swap_32(x) (x)
 	unsigned char bitfield[8]={1,2,4,8,16,32,64,128};
 #else
-	#define swap_16(x) ((((x) & 0xff) << 8) | (((x) >> 8) & 0xff))
-	#define swap_32(x) (((x) >> 24) | (((x) & 0x00ff0000) >> 8)  | (((x) & 0x0000ff00) << 8)  | ((x) << 24))
 	unsigned char bitfield[8]={128,64,32,16,8,4,2,1};
 #endif
 
@@ -64,7 +62,7 @@ void blit_raw(tSDL_vnc * vnc, tSDL_vnc_rect rect);
 #ifdef DEBUG
 	#define DBMESSAGE 	printf
 #else
-	#define DBMESSAGE 	//
+	#define DBMESSAGE(...)	//
 #endif
 
 #ifdef TRACE_LAST_ERROR
@@ -81,15 +79,62 @@ void blit_raw(tSDL_vnc * vnc, tSDL_vnc_rect rect);
 	#define DBERROR 	printf(">>> Error: "); printf
 #endif
 
+#define MAX(a,b) (((a) > (b)) ? (a) : (b))
+#define MIN(a,b) (((a) < (b)) ? (a) : (b))
+#define ARRSIZE(a) (sizeof(a)/sizeof(a[0]))
+
 #define CHECKED_READ(vnc, dest, len, message) { \
-    int result = Recv(vnc->socket, dest, len, 0); \
+    int result = recv(vnc->socket, dest, len, MSG_WAITALL); \
     if (result!=len) { \
     printf("Error reading %s. Got %i of %i bytes.\n", message, result, len); \
     return 0; \
     } \
     }
 
+#define ASSERT_SIZE(e,s) static_assert(sizeof(e) == (s), #e" must be "#s" bytes!")
 
+ASSERT_SIZE(tSDL_vnc_rect, 8);
+ASSERT_SIZE(tSDL_vnc_pixelFormat, 16);
+ASSERT_SIZE(tSDL_vnc_serverFormat, 24 + VNC_BUFSIZE);
+ASSERT_SIZE(tSDL_vnc_updateRequest, 10);
+ASSERT_SIZE(tSDL_vnc_serverMessage, 1);
+ASSERT_SIZE(tSDL_vnc_serverUpdate, 3);
+ASSERT_SIZE(tSDL_vnc_serverRectangle, 12);
+ASSERT_SIZE(tSDL_vnc_serverColormap, 5);
+ASSERT_SIZE(tSDL_vnc_serverText, 7);
+ASSERT_SIZE(tSDL_vnc_serverCopyrect, 4);
+ASSERT_SIZE(tSDL_vnc_serverRRE, 8);
+ASSERT_SIZE(tSDL_vnc_serverRREdata, 12);
+ASSERT_SIZE(tSDL_vnc_serverHextile, 1);
+ASSERT_SIZE(tSDL_vnc_serverHextileBg, 4);
+ASSERT_SIZE(tSDL_vnc_serverHextileFg, 4);
+ASSERT_SIZE(tSDL_vnc_serverHextileSubrects, 1);
+ASSERT_SIZE(tSDL_vnc_serverHextileColored8bpp, 3);
+ASSERT_SIZE(tSDL_vnc_serverHextileColored16bpp, 4);
+ASSERT_SIZE(tSDL_vnc_serverHextileColored32bpp, 6);
+ASSERT_SIZE(tSDL_vnc_serverHextileRect, 2);
+ASSERT_SIZE(tSDL_vnc_clientKeyevent, 8);
+ASSERT_SIZE(tSDL_vnc_clientPointerevent, 6);
+
+typedef enum ClientMsgType {
+	CMSG_PIXELFORMAT  = 0,
+	CMSG_SETENCODINGS = 2,
+	CMSG_FBUPDATEREQ  = 3,
+	CMSG_KEYEVENT     = 4,
+	CMSG_POINTEREVENT = 5,
+	CMSG_CLIENTCUTTXT = 6,
+} ClientMsgType;
+
+typedef enum VNCEncoding {
+	ENC_RAW = 0,
+	ENC_COPYRECT = 1,
+	ENC_RRE = 2,
+	ENC_HEXTILE = 5,
+	ENC_TRLE = 15,
+	ENC_ZRLE = 16,
+	ENC_CURSOR = -239,
+	ENC_DESKTOP = -223,
+} VNCEncoding;
 
 char *strdup(const char *s);
 
@@ -113,54 +158,33 @@ static int WaitForMessage(tSDL_vnc *vnc, unsigned int usecs)
 	return result;
 }
 
-int Recv(int s, void *buf, size_t len, int flags)
-{
-	unsigned char *target=buf;
-	size_t to_read=len;
-	int result;
-
-	while (to_read>0) {
-		result = recv(s,target,to_read,flags);
-		if (result<0) return result;
-		if (result==0) return (len-to_read);
-		to_read -= result;
-		target += result;
-	}
-
-	return len ;
-}
-
 void GrowUpdateRegion(tSDL_vnc *vnc, SDL_Rect *trec)
 {
-	Sint16 ax1,ay1,ax2,ay2;
-	Sint16 bx1,by1,bx2,by2;
-
 	if (vnc->fbupdated) {
-		/* Original update rectangle */
-		ax1=vnc->updatedRect.x;
-		ay1=vnc->updatedRect.y;
-		ax2=vnc->updatedRect.x+vnc->updatedRect.w;
-		ay2=vnc->updatedRect.y+vnc->updatedRect.h;
-		/* New update rectangle */
-		bx1=trec->x;
-		by1=trec->y;
-		bx2=trec->x+trec->w;
-		by2=trec->y+trec->h;
-		/* Adjust */
-		if (bx1<ax1) ax1=bx1;
-		if (by1<ay1) ay1=by1;
-		if (bx2>ax2) ax2=bx2;
-		if (by2>ay2) ay2=by2;
-		/* Update */
-		vnc->updatedRect.x=ax1;
-		vnc->updatedRect.y=ay1;
-		vnc->updatedRect.w=ax2-ax1;
-		vnc->updatedRect.h=ay2-ay1;
+		Sint16 left,top,right,bot;
+		SDL_Rect *srec = &vnc->updatedRect;
+
+		/* Adjust bounds for growth */
+		top=MIN(srec->y, trec->y);
+		left=MIN(srec->x, trec->x);
+		bot=MAX(srec->y+srec->h, trec->y + trec->h);
+		right=MAX(srec->x+srec->w, trec->x + trec->w);
+
+		srec->y=top;
+		srec->x=left;
+		srec->h=bot-top;
+		srec->w=right-left;
 	} else {
 		/* Initialize update rectangle */
 		vnc->updatedRect=*trec;
 		vnc->fbupdated=1;
 	}
+}
+
+/* Length of buffer with current bpp */
+static ssize_t frameLen(tSDL_vnc *vnc, int dim)
+{
+	return vnc->bpp/8 * dim;
 }
 
 
@@ -169,7 +193,7 @@ static int handleHextile(tSDL_vnc *vnc) {
     //
     if (!(vnc->tilebuffer)) {
         // Create new tilebuffer
-        vnc->tilebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,16,16,32,vnc->rmask,vnc->gmask,vnc->bmask,0);
+        vnc->tilebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,16,16,vnc->bpp,vnc->rmask,vnc->gmask,vnc->bmask,0);
         if (vnc->tilebuffer) {
             SDL_SetAlpha(vnc->tilebuffer,0,0);
             DBMESSAGE("Created new tilebuffer.\n");
@@ -181,51 +205,92 @@ static int handleHextile(tSDL_vnc *vnc) {
     return 1;
 }
 
+enum SecType {
+	SEC_INVALID = 0,
+	SEC_NOAUTH  = 1,
+	SEC_VNCAUTH = 2,
+};
 
+static void printReasonString(tSDL_vnc *vnc) {
+	uint32_t size = 0;
+	ssize_t recvd, total;
 
-static int read_security_type(tSDL_vnc *vnc) {
-    if (vnc->versionMinor < 7) {
-        // Read security type (simple)
-        CHECKED_READ(vnc, vnc->buffer, 4, "security type");
-        vnc->security_type=vnc->buffer[3];
-        DBMESSAGE("Security type (read): %i\n", vnc->security_type);
-        return 1;
-    }
+	recvd = recv(vnc->socket, &size, sizeof(size), MSG_WAITALL);
+	if (recvd != 4) {
+		DBERROR("Read error on reason.\n");
+		return;
+	}
+	size = ntohl(size);
 
-    // Addition for RFB 003 008
+	DBERROR("Reason: ");
+	for (total = 0; total < size; total += recvd) {
+		memset(vnc->buffer, 0, VNC_BUFSIZE);
+		recvd = recv(vnc->socket, vnc->buffer, MIN(size, VNC_BUFSIZE-1), MSG_WAITALL);
+		if (recvd <= 0)
+			break;
+		printf(vnc->buffer);
+	}
+	printf("\n");
 
-    CHECKED_READ(vnc, vnc->buffer, 1, "security type");
+	if (recvd == -1) {
+		DBERROR("Recv error: %s\n", strerror(errno));
+	}
+}
 
-    // Security Type List! Receive number of supported Security Types
-    int nSecTypes = vnc->buffer[0];
-    if (nSecTypes == 0) {
-        DBERROR("Server offered an empty list of security types.\n");
-        return 0;
-    }
-        
-    // Receive Security Type List (Buffer overflow possible!)
-    int result = Recv(vnc->socket,vnc->buffer,nSecTypes,0);
-        
-    // Find supported one...
-    vnc->security_type = 0;
-    int i;
-    for (i = 0; i < result; i++) {
-        vnc->security_type = vnc->buffer[i];
-        // Break if supported type (currently 1 or 2) found
-        if ((vnc->security_type == 1) || (vnc->security_type == 2)) break;
-    }
-    
-    // Select it
-    DBMESSAGE("Security type (select): %i\n", vnc->security_type);
-    vnc->buffer[0] = vnc->security_type;
-        
-    result = send(vnc->socket,vnc->buffer,1,0);
-    if (result != 1) {
-        DBERROR("Write error on security type selection.\n");
-        return 0;
-    }
+static enum SecType read_security_type(tSDL_vnc *vnc) {
+	uint8_t security = SEC_INVALID;
+	uint8_t typeCount;
+	uint8_t *types = vnc->buffer;
+	ssize_t recvd, sent, datalen;
+	int i;
+	if (vnc->versionMinor < 7) {
+		uint32_t stype = 0;
+		// Read security type as in VNC 3.3
+		CHECKED_READ(vnc, &stype, 4, "security type");
+		security=ntohl(stype);
 
-    return 1;
+		DBMESSAGE("Security type: %i\n", security);
+		return security;
+	}
+
+	CHECKED_READ(vnc, &typeCount, sizeof(typeCount), "security type");
+	if (typeCount == 0) {
+		DBERROR("Server offered an empty list of security types.\n");
+		if (vnc->versionMinor >= 8)
+			printReasonString(vnc);
+		return SEC_INVALID;
+	}
+
+	datalen = MIN(typeCount, VNC_BUFSIZE);
+	recvd = recv(vnc->socket, types, datalen, MSG_WAITALL);
+	if (recvd != datalen) {
+		DBERROR("Error on receiving security types");
+		return SEC_INVALID;
+	}
+
+	for (i = 0; i < typeCount; i++) {
+		uint8_t sectype = types[i];
+		if ((sectype == SEC_NOAUTH) || (sectype == SEC_VNCAUTH)) {
+			security = sectype;
+			break;
+		}
+	}
+
+	if (security == SEC_INVALID) {
+		DBERROR("Got no supported security type.\n");
+		return SEC_INVALID;
+	}
+
+	// Select it
+	DBMESSAGE("Choosing security type: %i\n", security);
+	datalen = sizeof(security);
+	sent = send(vnc->socket, &security, datalen, 0);
+	if (sent != datalen) {
+		DBERROR("Write error on security type selection.\n");
+		return SEC_INVALID;
+	}
+
+	return security;
 }
 
 
@@ -237,8 +302,8 @@ static int HandleServerMessage_colormap(tSDL_vnc * vnc)
     // Read data, but ignore it
     CHECKED_READ(vnc, &serverColormap, 5, "server colormap");
 
-    serverColormap.first=swap_16(serverColormap.first);
-    serverColormap.number=swap_16(serverColormap.number);
+    serverColormap.first=ntohs(serverColormap.first);
+    serverColormap.number=ntohs(serverColormap.number);
 
     DBMESSAGE("Server colormap first color: %u\n",serverColormap.first);
     DBMESSAGE("Server colormap number: %u\n",serverColormap.number);
@@ -271,10 +336,10 @@ static inline void vnc_hextile_to_sdl_rect(uint8_t xy, uint8_t wh, SDL_Rect * de
 
 static inline void vnc_rect_swap(tSDL_vnc_rect * rect)
 {
-    rect->x = swap_16(rect->x);
-    rect->y = swap_16(rect->y);
-    rect->width  = swap_16(rect->width);
-    rect->height = swap_16(rect->height);
+    rect->x = ntohs(rect->x);
+    rect->y = ntohs(rect->y);
+    rect->width  = ntohs(rect->width);
+    rect->height = ntohs(rect->height);
 }
 
 static void blit_scratch(tSDL_vnc * vnc, tSDL_vnc_rect rect)
@@ -301,7 +366,7 @@ static int ServerRectangle_Raw(tSDL_vnc * vnc,
     if (serverRectangle.width == vnc->framebuffer->pitch / 4) {
         if (read_raw(vnc, serverRectangle) == 0) return 0;
     } else {
-        int bytes_to_read = serverRectangle.width*serverRectangle.height*4;
+        int bytes_to_read = frameLen(vnc, serverRectangle.width*serverRectangle.height);
         CHECKED_READ(vnc, (unsigned char *)vnc->rawbuffer, bytes_to_read, "pixel data");
         DBMESSAGE("Blitting %i bytes of raw pixel data.\n",bytes_to_read);
         blit_raw(vnc,serverRectangle);
@@ -320,8 +385,8 @@ static int ServerRectangle_CopyRect(tSDL_vnc * vnc,
     CHECKED_READ(vnc, &serverCopyrect, 4, "copyrect");
 
     SDL_Rect trec, srec;
-    srec.x=swap_16(serverCopyrect.x);
-    srec.y=swap_16(serverCopyrect.y);
+    srec.x=ntohs(serverCopyrect.x);
+    srec.y=ntohs(serverCopyrect.y);
     DBMESSAGE("Copyrect from %u,%u\n",srec.x,srec.y);
     srec.w=serverRectangle.width;
     srec.h=serverRectangle.height;
@@ -346,7 +411,7 @@ static int ServerRectangle_Cursor(tSDL_vnc * vnc,
     vnc->cursorhotspot.x = rect.x;
     vnc->cursorhotspot.y = rect.y;
 
-    int bytes_to_read = rect.width*rect.height*4;
+    int bytes_to_read = frameLen(vnc, rect.width*rect.height);
     
     CHECKED_READ(vnc, (unsigned char *)vnc->scratchbuffer->pixels,bytes_to_read, "cursor data");
     DBMESSAGE("Read cursor pixel data %u byte.\n",bytes_to_read);
@@ -376,7 +441,7 @@ static int ServerRectangle_Cursor(tSDL_vnc * vnc,
             bitindex=cx % 8;
             *target = (cursormask[byteindex] & bitfield[bitindex]) ? 255 : 0;
             if (bitindex==7) byteindex++;
-            target += 4;
+            target += frameLen(vnc,1);
         } // cx loop
         if (bitindex<7) byteindex++;
     } // cy loop
@@ -394,7 +459,7 @@ static int ServerRectangle_RRE(tSDL_vnc * vnc,
 	tSDL_vnc_serverRREdata serverRREdata;
     DBMESSAGE("RRE encoding.\n");
     CHECKED_READ(vnc, &serverRRE, 8, "RRE header");
-    serverRRE.number=swap_32(serverRRE.number);
+    serverRRE.number=ntohl(serverRRE.number);
 
     DBMESSAGE("RRE of %u rectangles. Background color 0x%06x\n",serverRRE.number,serverRRE.background);
 
@@ -446,18 +511,18 @@ static int ServerRectangle_HexTile(tSDL_vnc * vnc,
 
             if (serverHextile.mode & 1) {
                 // Read raw data for tile in lines
-                int bytes_to_read = bx*by*4;
+                int bytes_to_read = frameLen(vnc, bx*by);
                 int result = 0;
                 if ((bx == 16) && (by == 16)) {
                     // complete tile
-                    result = Recv(vnc->socket,(unsigned char *)vnc->tilebuffer->pixels,bytes_to_read,0);
+                    result = recv(vnc->socket,(unsigned char *)vnc->tilebuffer->pixels,bytes_to_read,MSG_WAITALL);
                 } else {
                     // partial tile
                     unsigned char * target =(unsigned char *)vnc->tilebuffer->pixels;
                     int rowindex=by;
                     while (rowindex) {
-                        result += Recv(vnc->socket,target,bx*4,0);
-                        target += 16*4;
+                        result += recv(vnc->socket,target,frameLen(vnc, bx),MSG_WAITALL);
+                        target += frameLen(vnc, 16);
                         rowindex--;
                     }
                 }
@@ -476,11 +541,11 @@ static int ServerRectangle_HexTile(tSDL_vnc * vnc,
                 
                 // no raw data
                 if (serverHextile.mode & 2) {
-                    CHECKED_READ(vnc, &serverHextileBg, 4, "hextile background");
+                    CHECKED_READ(vnc, &serverHextileBg, frameLen(vnc, 1), "hextile background");
                 }
                 SDL_FillRect(vnc->tilebuffer,NULL,serverHextileBg.color);
                 if (serverHextile.mode & 4) {
-                    CHECKED_READ(vnc, &serverHextileFg, 4, "hextile foreground");
+                    CHECKED_READ(vnc, &serverHextileFg, frameLen(vnc, 1), "hextile foreground");
                 }
                 if (serverHextile.mode & 8) {
                     tSDL_vnc_serverHextileSubrects serverHextileSubrects;
@@ -491,12 +556,29 @@ static int ServerRectangle_HexTile(tSDL_vnc * vnc,
                         num_subrectangles++;
                         // Check color mode
                         if (serverHextile.mode & 16) {
-                            tSDL_vnc_serverHextileColored serverHextileColored;
-                            
-                            // Colored subrect
-                            CHECKED_READ(vnc, &serverHextileColored,6, "hextile color subrect data");
-                            vnc_hextile_to_sdl_rect(serverHextileColored.xy, serverHextileColored.wh, &srec);
-                            SDL_FillRect(vnc->tilebuffer,&srec,serverHextileColored.color);
+#define READ_HEXTILE(bpp)   tSDL_vnc_serverHextileColored ## bpp serverHextileColored;\
+																						\
+							CHECKED_READ(vnc, &serverHextileColored, sizeof(serverHextileColored), "hextile color subrect data");\
+							vnc_hextile_to_sdl_rect(serverHextileColored.xy, serverHextileColored.wh, &srec);\
+							SDL_FillRect(vnc->tilebuffer,&srec,serverHextileColored.color);
+
+							switch (vnc->bpp) {
+								case 8:  {
+											 READ_HEXTILE(8bpp);
+										 }
+										 break;
+								case 16: {
+											 READ_HEXTILE(16bpp);
+										 }
+										 break;
+								case 32: {
+											 READ_HEXTILE(32bpp);
+										 }
+										 break;
+								default:
+									DBERROR("Unsuppored bit depth!");
+									return 0;
+							}
                         } else {
                             // Non-colored Subrect
                             tSDL_vnc_serverHextileRect serverHextileRect;
@@ -527,28 +609,28 @@ static int ServerRectangle_HexTile(tSDL_vnc * vnc,
 int ReadServerRectangle(tSDL_vnc * vnc,
                         tSDL_vnc_serverRectangle * serverRectangle)
 {
-    int result = Recv(vnc->socket,serverRectangle,12,0);
+    int result = recv(vnc->socket,serverRectangle,12,MSG_WAITALL);
     if (result!=12) return 0;
 
     vnc_rect_swap(&serverRectangle->rect);
-    serverRectangle->encoding=swap_32(serverRectangle->encoding);
+    serverRectangle->encoding=ntohl(serverRectangle->encoding);
 
     DBMESSAGE("    @ %u,%u size %u,%u encoding %u\n",serverRectangle->rect.x,serverRectangle->rect.y,serverRectangle->rect.width,serverRectangle->rect.height,serverRectangle->encoding);
     
     /* Sanity check values */
-    if (serverRectangle->rect.x > vnc->serverFormat.width) {
+    if (serverRectangle->rect.x > vnc->serverFormat->width) {
         DBMESSAGE("Bad rectangle: x=%u setting to 0\n",serverRectangle->rect.x);
         serverRectangle->rect.x=0;
     }
-    if (serverRectangle->rect.y > vnc->serverFormat.height) {
+    if (serverRectangle->rect.y > vnc->serverFormat->height) {
         DBMESSAGE("Bad rectangle: y=%u setting to 0\n",serverRectangle->rect.y);
         serverRectangle->rect.y=0;
     }
-    if ((serverRectangle->rect.width<=0) || (serverRectangle->rect.width>vnc->serverFormat.width)) {
+    if ((serverRectangle->rect.width<=0) || (serverRectangle->rect.width>vnc->serverFormat->width)) {
         DBMESSAGE("Bad rectangle: width=%u setting to 1\n",serverRectangle->rect.width);
         serverRectangle->rect.width=1;
     }
-    if ((serverRectangle->rect.height<=0) || (serverRectangle->rect.height>vnc->serverFormat.height)) {
+    if ((serverRectangle->rect.height<=0) || (serverRectangle->rect.height>vnc->serverFormat->height)) {
         DBMESSAGE("Bad rectangle: height=%u setting to 1\n",serverRectangle->rect.height);
         serverRectangle->rect.height=1;
     }
@@ -575,7 +657,7 @@ static int PrepScratchBuffer(tSDL_vnc *vnc,
     }
     if (!(vnc->scratchbuffer)) {
         // Create new scratchbuffer
-        vnc->scratchbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,serverRectangle.width,serverRectangle.height,32,vnc->rmask,vnc->gmask,vnc->bmask,0);
+        vnc->scratchbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,serverRectangle.width,serverRectangle.height,vnc->bpp,vnc->rmask,vnc->gmask,vnc->bmask,0);
         if (vnc->scratchbuffer) {
             SDL_SetAlpha(vnc->scratchbuffer,0,0);
             DBMESSAGE("Created new scratchbuffer w=%d,h=%d\n", serverRectangle.width, serverRectangle.height);
@@ -596,7 +678,8 @@ static int HandleServerMessage_update(tSDL_vnc *vnc)
     CHECKED_READ(vnc, &serverUpdate, 3, "server update");
 
     /* ??? Protocol sais U16, TightVNC server sends U8 */
-    serverUpdate.rectangles=serverUpdate.rectangles & 0x00ff;
+    //serverUpdate.rectangles=serverUpdate.rectangles & 0x00ff;
+    serverUpdate.rectangles = ntohs(serverUpdate.rectangles);
     DBMESSAGE("Number of rectangles: %u (%04x)\n",serverUpdate.rectangles,serverUpdate.rectangles);
     
     int num_rectangles=0;
@@ -611,31 +694,31 @@ static int HandleServerMessage_update(tSDL_vnc *vnc)
 
         /* Rectangle Data */
         switch (serverRectangle.encoding) {
-        case 0:
+        case ENC_RAW:
             if (ServerRectangle_Raw(vnc, serverRectangle.rect) == 0) return 0;
             break;
-        case 1:
+        case ENC_COPYRECT:
             if (PrepScratchBuffer(vnc, serverRectangle.rect) == 0) return 0;
             if (ServerRectangle_CopyRect(vnc, serverRectangle.rect) == 0) return 0;
             break;
-        case 2:
+        case ENC_RRE:
             if (PrepScratchBuffer(vnc, serverRectangle.rect) == 0) return 0;
             if (ServerRectangle_RRE(vnc, serverRectangle.rect) == 0) return 0;
             break;
-        case 5:
+        case ENC_HEXTILE:
             if (PrepScratchBuffer(vnc, serverRectangle.rect) == 0) return 0;
             if (ServerRectangle_HexTile(vnc, serverRectangle.rect) == 0) return 0;
             break;
-        case 16:
+        case ENC_ZRLE:
             DBERROR("ZRLE encoding - ignored.\n");
             return 0;
             break;
             
-        case 0xffffff11:
+        case ENC_CURSOR:
             if (ServerRectangle_Cursor(vnc, serverRectangle.rect) == 0) return 0;
             break;
             
-        case 0xffffff21:
+        case ENC_DESKTOP:
             DBMESSAGE("DESKTOP pseudo-encoding (ignored).\n");
             break;
             
@@ -652,8 +735,8 @@ static int HandleServerMessage_text(tSDL_vnc *vnc)
     DBMESSAGE("Message: text\n");
 	tSDL_vnc_serverText serverText;
 
-    CHECKED_READ(vnc, &serverText,5, "text");
-    serverText.length=swap_32(serverText.length);
+    CHECKED_READ(vnc, &serverText,7, "text");
+    serverText.length=ntohl(serverText.length);
 
     DBMESSAGE("Server text length: %u\n",serverText.length);
     // ??? Protocol sais U16 is length to read
@@ -662,7 +745,7 @@ static int HandleServerMessage_text(tSDL_vnc *vnc)
             serverText.length=1;
     }
     while (serverText.length>0) {
-        int result = Recv(vnc->socket,vnc->buffer,serverText.length % VNC_BUFSIZE,0);
+        int result = recv(vnc->socket,vnc->buffer,serverText.length % VNC_BUFSIZE,MSG_WAITALL);
         if (result <= 0) {
             serverText.length=0;
         } else {
@@ -753,7 +836,7 @@ int vncClientThread (void *data) {
 			
 			// Framebuffer update request
 			//DBMESSAGE("vncClientThread: Sending Update Request...\n",result);
-			result = send(vnc->socket,(const char *)&vnc->updateRequest,10,0);
+			result = send(vnc->socket,vnc->updateRequest,10,0);
 			if (result==10) {
 				//DBMESSAGE("vncClientThread: Incremental Framebuffer Update Request: send\n");
 			} else {
@@ -779,29 +862,29 @@ int vncClientThread (void *data) {
 
 static int vncReadServerFormat(tSDL_vnc *vnc) {
     // Server Initialiazation
-    int result = Recv(vnc->socket,&vnc->serverFormat,24,0);
+    int result = recv(vnc->socket,vnc->serverFormat,24,MSG_WAITALL);
     if (result==24) {
         // Swap format numbers
-        vnc->serverFormat.width      =swap_16(vnc->serverFormat.width);
-        vnc->serverFormat.height     =swap_16(vnc->serverFormat.height);
-        vnc->serverFormat.pixel_format.redmax     =swap_16(vnc->serverFormat.pixel_format.redmax);
-        vnc->serverFormat.pixel_format.greenmax   =swap_16(vnc->serverFormat.pixel_format.greenmax);
-        vnc->serverFormat.pixel_format.bluemax    =swap_16(vnc->serverFormat.pixel_format.bluemax);
-        vnc->serverFormat.namelength =swap_32(vnc->serverFormat.namelength);
+        vnc->serverFormat->width      =ntohs(vnc->serverFormat->width);
+        vnc->serverFormat->height     =ntohs(vnc->serverFormat->height);
+        vnc->serverFormat->pixel_format.redmax     =ntohs(vnc->serverFormat->pixel_format.redmax);
+        vnc->serverFormat->pixel_format.greenmax   =ntohs(vnc->serverFormat->pixel_format.greenmax);
+        vnc->serverFormat->pixel_format.bluemax    =ntohs(vnc->serverFormat->pixel_format.bluemax);
+        vnc->serverFormat->namelength =ntohl(vnc->serverFormat->namelength);
         // Info
-        DBMESSAGE("Format Width: %u (0x%04x)\n",vnc->serverFormat.width,vnc->serverFormat.width);
-        DBMESSAGE("Format Height: %u (0x%04x)\n",vnc->serverFormat.height,vnc->serverFormat.height);
-        DBMESSAGE("Format Pixel bpp: %u\n",vnc->serverFormat.pixel_format.bpp);
-        DBMESSAGE("Format Pixel depth: %u\n",vnc->serverFormat.pixel_format.depth);
-        DBMESSAGE("Format Pixel big endian: %u\n",vnc->serverFormat.pixel_format.bigendian);
-        DBMESSAGE("Format Pixel true color: %u\n",vnc->serverFormat.pixel_format.truecolor);
-        DBMESSAGE("Format Pixel R max: %u\n",vnc->serverFormat.pixel_format.redmax);
-        DBMESSAGE("Format Pixel G max: %u\n",vnc->serverFormat.pixel_format.greenmax);
-        DBMESSAGE("Format Pixel B max: %u\n",vnc->serverFormat.pixel_format.bluemax);
-        DBMESSAGE("Format Pixel R shift: %u\n",vnc->serverFormat.pixel_format.redshift);
-        DBMESSAGE("Format Pixel G shift: %u\n",vnc->serverFormat.pixel_format.greenshift);
-        DBMESSAGE("Format Pixel B shift: %u\n",vnc->serverFormat.pixel_format.blueshift);
-        DBMESSAGE("Format Name Length: %u (0x%08x)\n",vnc->serverFormat.namelength,vnc->serverFormat.namelength);
+        DBMESSAGE("Format Width: %u (0x%04x)\n",vnc->serverFormat->width,vnc->serverFormat->width);
+        DBMESSAGE("Format Height: %u (0x%04x)\n",vnc->serverFormat->height,vnc->serverFormat->height);
+        DBMESSAGE("Format Pixel bpp: %u\n",vnc->serverFormat->pixel_format.bpp);
+        DBMESSAGE("Format Pixel depth: %u\n",vnc->serverFormat->pixel_format.depth);
+        DBMESSAGE("Format Pixel big endian: %u\n",vnc->serverFormat->pixel_format.bigendian);
+        DBMESSAGE("Format Pixel true color: %u\n",vnc->serverFormat->pixel_format.truecolor);
+        DBMESSAGE("Format Pixel R max: %u\n",vnc->serverFormat->pixel_format.redmax);
+        DBMESSAGE("Format Pixel G max: %u\n",vnc->serverFormat->pixel_format.greenmax);
+        DBMESSAGE("Format Pixel B max: %u\n",vnc->serverFormat->pixel_format.bluemax);
+        DBMESSAGE("Format Pixel R shift: %u\n",vnc->serverFormat->pixel_format.redshift);
+        DBMESSAGE("Format Pixel G shift: %u\n",vnc->serverFormat->pixel_format.greenshift);
+        DBMESSAGE("Format Pixel B shift: %u\n",vnc->serverFormat->pixel_format.blueshift);
+        DBMESSAGE("Format Name Length: %u (0x%08x)\n",vnc->serverFormat->namelength,vnc->serverFormat->namelength);
     } else {
         DBERROR("Read error in server info (%i)\n", result);
         return 0;
@@ -810,15 +893,15 @@ static int vncReadServerFormat(tSDL_vnc *vnc) {
 	
     
     // Desktop Name
-    if (vnc->serverFormat.namelength>(VNC_BUFSIZE-1)) {
-        DBERROR("Desktop name too long: %i\n",vnc->serverFormat.namelength);
+    if (vnc->serverFormat->namelength>(VNC_BUFSIZE-1)) {
+        DBERROR("Desktop name too long: %i\n",vnc->serverFormat->namelength);
         return 0;
     }
-    if (vnc->serverFormat.namelength>1) {
-        result = Recv(vnc->socket,vnc->serverFormat.name,vnc->serverFormat.namelength,0);
-        if (result==vnc->serverFormat.namelength) {
-            vnc->serverFormat.name[vnc->serverFormat.namelength]=0;
-            DBMESSAGE("Desktop name: %s\n",vnc->serverFormat.name);
+    if (vnc->serverFormat->namelength>1) {
+        result = recv(vnc->socket,vnc->serverFormat->name,vnc->serverFormat->namelength,MSG_WAITALL);
+        if (result==vnc->serverFormat->namelength) {
+            vnc->serverFormat->name[vnc->serverFormat->namelength]=0;
+            DBMESSAGE("Desktop name: %s\n",vnc->serverFormat->name);
         } else {
             DBERROR("Read error on desktop name.\n");
             return 0;
@@ -830,28 +913,15 @@ static int vncReadServerFormat(tSDL_vnc *vnc) {
     return 1;
 }
 
-
-int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, int framerate) {
-	struct sockaddr_in address;
-	int result;
-	unsigned char *curpos, *newpos, *modestring;
-	unsigned int security_result;
-	unsigned char security_key[8];
-	unsigned char security_challenge[16];
-	unsigned char security_response[16];
-	tSDL_vnc_pixelFormat pixel_format;
-	struct hostent *he;
-	struct in_addr **addr_list;
-	int i = -1;
-
+static int initVNC(tSDL_vnc *vnc, int framerate) {
 	// Initialize variables
-	vnc->buffer=(unsigned char *)malloc(VNC_BUFSIZE);
-	if (!vnc->buffer) {
+	if (!(vnc->buffer = calloc(VNC_BUFSIZE, 1))) {
 		DBERROR("Out of memory allocating workbuffer.\n");
 		return 0;
 	}
-	vnc->clientbuffer=(char *)malloc(VNC_BUFSIZE);
-	if (!vnc->clientbuffer) {
+
+	if (!(vnc->clientbuffer = calloc(VNC_BUFSIZE, 1))) {
+		free(vnc->buffer);
 		DBERROR("Out of memory allocating clientbuffer.\n");
 		return 0;
 	}
@@ -860,8 +930,20 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 	vnc->tilebuffer=NULL;
 	vnc->cursorbuffer=NULL;
 
-    DBMESSAGE("Allocating %ld bytes for rawbuffer\n", RAWBUFFER_WIDTH * 4 * RAWBUFFER_HEIGHT);
-    vnc->rawbuffer = malloc(RAWBUFFER_WIDTH * 4 * RAWBUFFER_HEIGHT);
+	if(!(vnc->serverFormat = calloc(sizeof(*vnc->serverFormat), 1))) {
+		free(vnc->clientbuffer);
+		free(vnc->buffer);
+		DBERROR("Out of memory allocating serverFormat.\n");
+		return 0;
+	}
+
+	if(!(vnc->updateRequest = calloc(sizeof(*vnc->updateRequest), 1))) {
+		free(vnc->serverFormat);
+		free(vnc->clientbuffer);
+		free(vnc->buffer);
+		DBERROR("Out of memory allocating serverFormat.\n");
+		return 0;
+	}
 
 	vnc->fbupdated=0;
 	vnc->gotcursor=0;
@@ -879,310 +961,410 @@ int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, 
 		vnc->framerate=framerate;
 	}
 
+	return 1;
+}
+
+static int connectSocket(char *host, int port) {
+	struct sockaddr_in address;
+	struct hostent *he;
+	struct in_addr **addr_list;
+	int sock;
 	// Connect
 	DBMESSAGE("Creating socket...");
-	if ((vnc->socket = socket(AF_INET,SOCK_STREAM,0)) > 0) {
-		DBMESSAGE("Converting address...\n");
-		address.sin_family = AF_INET;
-		address.sin_port = htons(port);
-		if (inet_pton(AF_INET,host,&address.sin_addr) != 1) {
-			DBMESSAGE("Given IP [%s] could not be parsed. Trying to resolve it as a hostname...\n", host);
-			
-			// Resolve
-			if ((he = gethostbyname(host)) == NULL) {  // get the host info
-				DBERROR("Error: gethostbyname has had a bad day...\n");
-				return 0;
-			}
-			//DBMESSAGE("Official name is: %s\n", he->h_name);
-			DBMESSAGE("IP addresses: ");
-			addr_list = (struct in_addr **)he->h_addr_list;
-			i = -1;
+	if ((sock = socket(AF_INET,SOCK_STREAM,0)) == -1) {
+		DBERROR("Could not create socket.\n");
+		return -1;
+	}
+	DBMESSAGE("Converting address...\n");
+	address.sin_family = AF_INET;
+	address.sin_port = htons(port);
+	if (inet_pton(AF_INET,host,&address.sin_addr) != 1) {
+		DBMESSAGE("Given IP [%s] could not be parsed. Trying to resolve it as a hostname...\n", host);
+
+		// Resolve
+		if ((he = gethostbyname(host)) == NULL) {  // get the host info
+			DBERROR("Error: gethostbyname has had a bad day...\n");
+			return -1;
+		}
+		//DBMESSAGE("Official name is: %s\n", he->h_name);
+		DBMESSAGE("IP addresses: ");
+		addr_list = (struct in_addr **)he->h_addr_list;
+		{
+			int i;
 			for (i = 0; addr_list[i] != NULL; i++) {
 				DBMESSAGE("[%s] ", inet_ntoa(*addr_list[i]));
 			}
 			DBMESSAGE("\n");
-			if (i == -1) {
+			if (i == 0) {
 				DBERROR("Error: No applicable IP found.\n");
-				return 0;
+				return -1;
 			} else {
 				address.sin_addr = *addr_list[0];
-			}			
+			}
 		}
+	}
 
-		// Connect to server
-		DBMESSAGE("Connecting socket...");
-		if (connect(vnc->socket,(struct sockaddr *)&address,sizeof(address)) == 0) {
-			DBMESSAGE("The connection was accepted with the server %s...\n",inet_ntoa(address.sin_addr));
-			
-			// Server startup
-			
-			// Version handshaking
-			result = Recv(vnc->socket,vnc->buffer,12,0);
-			if (result==12) {
-				vnc->buffer[12]=0;
-				DBMESSAGE("Server Version: %s",vnc->buffer);
-			} else {
-				DBERROR("Read error on server version.\n");
-				return 0;
-			}
-			
-			// Check major version 3
-			if (vnc->buffer[6]=='3') {
-				vnc->versionMajor = 3;
-				vnc->versionMinor = vnc->buffer[10]-'0';
-				DBMESSAGE("3.x, Minor Version: %i\n",vnc->versionMinor);
-			} else {
-				DBERROR("Major version mismatch. Expected 3.\n");
-				return 0;
-			}
-			
-			// Send same version back
-			result = send(vnc->socket,vnc->buffer,12,0);
-			if (result==12) {
-				DBMESSAGE("Requested Version (clone): %s",vnc->buffer);
-			} else {
-				DBERROR("Write error on version echo.\n");
-				return 0;
-			}
-			
-            if (read_security_type(vnc) == 0) return 0;
+	// Connect to server
+	DBMESSAGE("Connecting socket...");
+	if (connect(sock,(struct sockaddr *)&address,sizeof(address)) == -1) {
+		DBERROR("Could not connect to server %s:%i\n",host,port);
+		return -1;
+	}
+	DBMESSAGE("The connection was accepted with the server %s...\n",inet_ntoa(address.sin_addr));
 
-			// Check type
-			if ((vnc->security_type < 1) || (vnc->security_type > 2)) {
-				DBERROR("Security: Invalid.\n");
-				return 0;
-			}
-			if (vnc->security_type == 1) {
-				DBMESSAGE("Security: None.\n");
-			}
-			if (vnc->security_type == 2) {
-				DBMESSAGE("Security: VNC Authentication\n");
-				
-				// Security Handshaking
-				result = Recv(vnc->socket,&security_challenge,16,0);
-				if (result==16) {
-					DBMESSAGE("Security Challenge: received\n");
-				} else {
-					DBERROR("Read error on security handshaking.\n");
-					return 0;
-				}
-				
-				// Calculate response
-				memset((char *)security_key,0,8);
-				strncpy((char *)security_key,password,8);
-				deskey(security_key,EN0);
-				des(security_challenge,security_response);
-				des(&security_challenge[8],&security_response[8]);
-				
-				// Send response
-				result = send(vnc->socket,(char *)security_response,16,0);
-				if (result==16) {
-					DBMESSAGE("Security Response: sent\n");
-				} else {
-					DBERROR("Write error on security response.\n");
-					return 0;
-				}
-				
-				// Security Result
-				result = Recv(vnc->socket,vnc->buffer,4,0);
-				if (result==4) {
-					security_result=vnc->buffer[0];
-					DBMESSAGE("Security Result: %i\n",security_result);
-				} else {
-					DBERROR("Read error on security result.\n");
-					return 0;
-				}
-				
-				DBMESSAGE("Security Result: %i", security_result);
-				
-				// Check result
-				if (security_result==1) {
-					DBERROR("Could not authenticate\n");
-					return 0;
-				}
-				
-			}
-			
-			// Send Client Initialization
-			vnc->buffer[0]=1;
-			result = send(vnc->socket,vnc->buffer,1,0);
-			if (result==1) {
-				DBMESSAGE("Client Initialization: shared\n");
-			} else {
-				DBERROR("Write error on client initialization.\n");
-				return 0;
-			}
-			
-            if (vncReadServerFormat(vnc) == 0) return 0;
+	return sock;
+}
 
-			// Set pixel format
-			memset(vnc->buffer,0,20);
-			vnc->buffer[0]=0;
-			pixel_format.bpp=32;
-			pixel_format.depth=32;
-			pixel_format.bigendian=0;
-			pixel_format.truecolor=1;
-			pixel_format.redmax=swap_16(255);
-			pixel_format.greenmax=swap_16(255);
-			pixel_format.bluemax=swap_16(255);
+static int handshakeVersion(tSDL_vnc *vnc) {
+	ssize_t sent, recvd;
+	int major, minor;
 
-            /* FIXME: These depends on endianness; current values below works for
-               little endian */
-			pixel_format.redshift=16; // Was 0, which doesn't match vnc->rmask
-			pixel_format.greenshift=8;
-			pixel_format.blueshift=0; // Was 16, which doesn't match vnc->bmask
-			memcpy((void *)&vnc->buffer[4],(void *)&pixel_format,16);
-			result = send(vnc->socket,vnc->buffer,20,0);
-			if (result == 20) {
-				DBMESSAGE("Pixel format set.\n");
-			} else {
-				DBERROR("Error setting pixel format.\n");
-				return(0);
-			}
-
-			// Set encodings
-			memset(vnc->buffer,0,VNC_BUFSIZE);
-			vnc->buffer[0]=2; // message type
-			// Count number of encodings
-			vnc->buffer[3]=0; // number of encodings
-			modestring=(unsigned char *)strdup(mode);
-			curpos=modestring;
-			while ((curpos) && (*curpos)) {
-				if (strncasecmp((const char *)curpos,"raw",3)==0) {
-					DBMESSAGE("Requesting mode: RAW\n");
-					vnc->buffer[3]++;
-					vnc->buffer[3+4*vnc->buffer[3]]=0;
-				} else
-				if (strncasecmp((const char *)curpos,"copyrect",8)==0) {
-					DBMESSAGE("Requesting mode: COPYRECT\n");
-					vnc->buffer[3]++;
-					vnc->buffer[3+4*vnc->buffer[3]]=1;
-				} else
-				if (strncasecmp((const char *)curpos,"rre",3)==0) {
-					DBMESSAGE("Requesting mode: RRE\n");
-					vnc->buffer[3]++;
-					vnc->buffer[3+4*vnc->buffer[3]]=2;
-				} else
-				if (strncasecmp((const char *)curpos,"hextile",7)==0) {
-					DBMESSAGE("Requesting mode: HEXTILE\n");
-					vnc->buffer[3]++;
-					vnc->buffer[3+4*vnc->buffer[3]]=5;
-				} else
-				if (strncasecmp((const char *)curpos,"zrle",4)==0) {
-					DBMESSAGE("Requesting mode: ZRLE\n");
-					vnc->buffer[3]++;
-					vnc->buffer[3+4*vnc->buffer[3]]=16;
-				} else
-				if (strncasecmp((const char *)curpos,"cursor",6)==0) {
-					DBMESSAGE("Requesting pseudoencoding: CURSOR\n");
-					vnc->buffer[3]++;
-					vnc->buffer[0+4*vnc->buffer[3]]=0xff;
-					vnc->buffer[1+4*vnc->buffer[3]]=0xff;
-					vnc->buffer[2+4*vnc->buffer[3]]=0xff;
-					vnc->buffer[3+4*vnc->buffer[3]]=0x11;
-				} else
-				if (strncasecmp((const char *)curpos,"desktop",7)==0) {
-					DBMESSAGE("Requesting pseudoencoding: DESKTOP\n");
-					vnc->buffer[3]++;
-					vnc->buffer[0+4*vnc->buffer[3]]=0xff;
-					vnc->buffer[1+4*vnc->buffer[3]]=0xff;
-					vnc->buffer[2+4*vnc->buffer[3]]=0xff;
-					vnc->buffer[3+4*vnc->buffer[3]]=0x21;
-				} else {
-					DBERROR("Unknown mode.\n");
-				}
-				if ((newpos=(unsigned char *)strstr((const char *)curpos,","))) {
-					curpos=newpos+1;
-				} else {
-					*curpos=0;
-				}
-			}
-			if (modestring) free(modestring);
-			result = send(vnc->socket,vnc->buffer,4+4*vnc->buffer[3],0);
-			if (result==(4+4*vnc->buffer[3])) {
-				DBMESSAGE("Mode request: send\n");
-			} else {
-				DBERROR("Write error on mode request.\n");
-				return 0;
-			}
-
-			// Create framebuffer
-			#if SDL_BYTEORDER == SDL_BIG_ENDIAN
-				DBMESSAGE("Client is: big-endian\n");
-				vnc->rmask = 0xff000000;
-				vnc->gmask = 0x00ff0000;
-				vnc->bmask = 0x0000ff00;
-				vnc->amask = 0x000000ff;
-			#else
-				// Pre
-				DBMESSAGE("Client is: little-endian\n");
-				//@FIXME: Strange... Palm Pre needs reversed R <-> B order! Maybe check "if(SDL_BYTEORDER == SDL_LIL_ENDIAN)"
-				vnc->rmask = 0x00ff0000;
-				vnc->gmask = 0x0000ff00;
-				vnc->bmask = 0x000000ff;
-				vnc->amask = 0xff000000;
-
-			#endif
-			vnc->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,vnc->serverFormat.width,vnc->serverFormat.height,32,vnc->rmask,vnc->gmask,vnc->bmask,0);
-			SDL_SetAlpha(vnc->framebuffer,0,0);
-			if (vnc->framebuffer==NULL) {
-				DBERROR("Could not create framebuffer.\n");
-				return 0;
-			} else {
-				DBMESSAGE("Framebuffer created.\n");
-			}
-
-			// Initial fb update flag is whole screen
-			vnc->fbupdated=0;
-			vnc->updatedRect.x=0;
-			vnc->updatedRect.y=0;
-			vnc->updatedRect.w=vnc->serverFormat.width;
-			vnc->updatedRect.h=vnc->serverFormat.height;
-
-			// Create 32x32 cursorbuffer (with alpha)
-			vnc->cursorbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,32,32,32,vnc->rmask,vnc->gmask,vnc->bmask,vnc->amask);
-			SDL_SetAlpha(vnc->cursorbuffer,SDL_SRCALPHA,0);
-			if (vnc->cursorbuffer==NULL) {
-				DBERROR("Could not create cursorbuffer.\n");
-				return 0;
-			} else {
-				DBMESSAGE("Cursorbuffer created.\n");
-			}
-
-			// Create standard update request
-			vnc->updateRequest.messagetype = 3;
-			vnc->updateRequest.incremental = 0;
-			vnc->updateRequest.rect.x=0;
-			vnc->updateRequest.rect.y=0;
-			vnc->updateRequest.rect.width=vnc->serverFormat.width;
-			vnc->updateRequest.rect.height=vnc->serverFormat.height;
-            vnc_rect_swap(&vnc->updateRequest.rect);
-
-			// Initial framebuffer update request
-			result = send(vnc->socket,(const char *)&vnc->updateRequest,10,0);
-			if (result==10) {
-				DBMESSAGE("Initial Framebuffer Update Request: send\n");
-			} else {
-				DBERROR("Write error on initial update request.\n");
-				return 0;
-			}
-
-			// Modify update request for incremental updates
-			vnc->updateRequest.incremental = 1;
-
-			// Start client thread
-			DBMESSAGE("Starting Thread...\n");
-			vnc->thread =  SDL_CreateThread(vncClientThread,(void *)vnc);
-			return 1;
-
-		} else {
-			DBERROR("Could not connect to server %s:%i\n",host,port);
-			return 0;
-		}
-	} else {
-		DBERROR("Could not create socket.\n");
+	recvd = recv(vnc->socket,vnc->buffer,12,MSG_WAITALL);
+	if (recvd!=12) {
+		DBERROR("Read error on server version. Bytes read:%d, expected: %d\n", recvd, 12);
 		return 0;
 	}
+
+	if (sscanf(vnc->buffer, "RFB %d.%d\n", &major, &minor) != 2) {
+		DBERROR("Server is not a VNC server, got reply: %s\n", vnc->buffer);
+		return 0;
+	}
+
+	if (major != 3) {
+		DBERROR("Major version mismatch. Expected 3.x; server is %d.%d\n", major, minor);
+		return 0;
+	} else if (minor < 3) {
+		DBERROR("Version mismatch. Expected at least 3.3; server is %d.%d\n", major, minor);
+		return 0;
+	} else if (minor < 7) {
+		vnc->versionMinor = 3;
+	} else if (minor > 8) {
+		vnc->versionMinor = 8;
+	} else {
+		vnc->versionMinor = minor;
+	}
+	DBMESSAGE("Server version: %d.%d\n", major, minor);
+
+	memset(vnc->buffer, 0, recvd);
+	sprintf(vnc->buffer, "RFB %03d.%03d\n", vnc->versionMajor, vnc->versionMinor);
+	sent = send(vnc->socket,vnc->buffer,12,0);
+	if (sent!=12) {
+		DBERROR("Write error on version echo.\n");
+		return 0;
+	}
+	DBMESSAGE("Requesting version: %s", (char*) vnc->buffer);
+
+	return 1;
+}
+
+static int getSecurityResult(tSDL_vnc *vnc)
+{
+	uint32_t security_result;
+	ssize_t datalen, recvd;
+
+	datalen = sizeof(security_result);
+	recvd = recv(vnc->socket, &security_result, datalen, MSG_WAITALL);
+	if (recvd != datalen) {
+		DBERROR("Read error on security result.\n");
+		return 0;
+	}
+	security_result = ntohl(security_result);
+	DBMESSAGE("Security Result: %i\n", security_result);
+
+	// Check result
+	if (security_result!=0) {
+		DBERROR("Could not authenticate:");
+		if (vnc->versionMinor >= 8)
+			printReasonString(vnc);
+
+		return 0;
+	}
+
+	return 1;
+}
+
+static int handshakeSecurity(tSDL_vnc *vnc, const char *password) {
+	enum SecType sectype;
+	char security_key[8];
+	char security_challenge[16];
+	char security_response[16];
+	ssize_t sent, recvd;
+	size_t datalen;
+
+	sectype = read_security_type(vnc);
+
+	if (sectype == SEC_NOAUTH) {
+		DBMESSAGE("Security: NOAUTH.\n");
+
+		if (vnc->versionMajor == 3 && vnc->versionMinor >= 8)
+			return getSecurityResult(vnc);
+
+	} else if (sectype == SEC_VNCAUTH) {
+		DBMESSAGE("Security: VNC Authentication\n");
+
+		// Security Handshaking
+		datalen = sizeof(security_challenge);
+		recvd = recv(vnc->socket, &security_challenge, datalen, MSG_WAITALL);
+		if (recvd != datalen) {
+			DBERROR("Read error on security handshake.\n");
+			return 0;
+		}
+		DBMESSAGE("Security challenge received\n");
+
+		// Calculate response
+		strncpy(security_key, password, 8);
+		deskey((unsigned char*)security_key, EN0);
+		des((unsigned char*)security_challenge, (unsigned char*)security_response);
+		des((unsigned char*)&security_challenge[8], (unsigned char*)&security_response[8]);
+
+		// Send response
+		datalen = sizeof(security_response);
+		sent = send(vnc->socket, security_response, datalen, 0);
+		if (sent != datalen) {
+			DBERROR("Write error on security response.\n");
+			return 0;
+		}
+		DBMESSAGE("Security Response: sent\n");
+		return getSecurityResult(vnc);
+
+	} else {
+		DBERROR("Security: Invalid.\n");
+		return 0;
+	}
+	DBMESSAGE("Security handshake successful!\n");
+	return 1;
+}
+
+struct setPixelFormat {
+	uint8_t type;
+	uint8_t padding[3];
+	tSDL_vnc_pixelFormat format;
+};
+
+static Uint16 colorMax(Uint32 mask, Uint8 shift)
+{
+	return mask >> shift;
+}
+
+static int negotiatePixels(tSDL_vnc *vnc) {
+	struct setPixelFormat *packet = vnc->buffer;
+	ssize_t sent, datalen;
+
+	if (vncReadServerFormat(vnc) == 0)
+		return 0;
+
+	packet->type = CMSG_PIXELFORMAT;
+	memset(packet->padding, 0, sizeof(packet->padding));
+
+	SDL_PixelFormat *fmt = SDL_GetVideoSurface()->format;
+	vnc->bpp = fmt->BitsPerPixel;
+	vnc->rmask = fmt->Rmask;
+	vnc->gmask = fmt->Gmask;
+	vnc->bmask = fmt->Bmask;
+	vnc->amask = fmt->Amask;
+
+	// Set pixel format
+	packet->format.bpp        = fmt->BitsPerPixel;
+	packet->format.depth      = fmt->BitsPerPixel;
+	packet->format.bigendian  = SDL_BYTEORDER == SDL_BIG_ENDIAN;
+	packet->format.truecolor  = fmt->palette == NULL;
+	packet->format.redmax     = htons(colorMax(fmt->Rmask, fmt->Rshift));
+	packet->format.greenmax   = htons(colorMax(fmt->Gmask, fmt->Gshift));
+	packet->format.bluemax    = htons(colorMax(fmt->Bmask, fmt->Bshift));
+	packet->format.redshift   = fmt->Rshift;
+	packet->format.greenshift = fmt->Gshift;
+	packet->format.blueshift  = fmt->Bshift;
+	memset(packet->format.padding, 0, sizeof(packet->format.padding));
+
+	static_assert(sizeof(*packet) == 20, "Packet holding pixel format should be 20 bytes.");
+	datalen = sizeof(*packet);
+	sent = send(vnc->socket, packet, datalen, 0);
+	if (sent != datalen) {
+		DBERROR("Error setting pixel format.\n");
+		return 0;
+	}
+	DBMESSAGE("Pixel format set.\n");
+
+	return 1;
+}
+
+struct EncName {
+	char *name;
+	VNCEncoding enc;
+};
+
+const struct EncName str_enc[] = {
+	{     "raw", ENC_RAW},
+	{"copyrect", ENC_COPYRECT},
+	{     "rre", ENC_RRE},
+	{ "hextile", ENC_HEXTILE},
+	{    "zrle", ENC_ZRLE},
+	{  "cursor", ENC_CURSOR},
+	{ "desktop", ENC_DESKTOP},
+};
+
+static VNCEncoding nameToEnc(const char *name) {
+
+	for (int i = 0; i < ARRSIZE(str_enc); i++) {
+		const char *m = str_enc[i].name;
+		if (strncasecmp(m, name, strlen(m))==0) {
+			return str_enc[i].enc;
+		}
+	}
+	return -1;
+}
+
+struct vnc_set_encodings_t {
+	uint8_t  type;
+	uint8_t  padding;
+	uint16_t count;
+	 int32_t encodings[];
+};
+
+static void hton_set_encodings(struct vnc_set_encodings_t *e)
+{
+	int i;
+	for (i = 0; i < e->count; i++) {
+		e->encodings[i] = htonl((uint32_t) e->encodings[i]);
+	}
+	e->count = htons(e->count);
+}
+
+static int negotiateEncodings(tSDL_vnc *vnc, const char *modes) {
+	int sent;
+	struct vnc_set_encodings_t *packet = (void*) vnc->buffer;
+	size_t psize;
+
+	packet->type = CMSG_SETENCODINGS;
+	packet->padding = 0;
+	packet->count = 0;
+
+	DBMESSAGE("Requesting modes %s\n", modes);
+	for (; modes && *modes; packet->count++) {
+		VNCEncoding enc = nameToEnc(modes);
+		if (enc == -1) {
+			DBERROR("Unknown encoding.\n");
+			return 0;
+		}
+
+		packet->encodings[packet->count] = enc;
+
+		if ((modes = strchr(modes,',')))
+			modes++;
+	}
+	psize = sizeof(*packet) + packet->count*sizeof(packet->encodings[0]);
+
+	hton_set_encodings(packet);
+	sent = send(vnc->socket, packet, psize, 0);
+	if (sent != psize) {
+		DBERROR("Write error on mode request.\n");
+		return 0;
+	}
+
+	DBMESSAGE("Mode request sent\n");
+	return 1;
+}
+
+static int postInit(tSDL_vnc *vnc) {
+	// Create framebuffer
+	DBMESSAGE("Allocating %lu bytes for rawbuffer\n", frameLen(vnc, RAWBUFFER_WIDTH*RAWBUFFER_HEIGHT));
+	if(!(vnc->rawbuffer = calloc(RAWBUFFER_WIDTH * RAWBUFFER_HEIGHT, frameLen(vnc, 1)))) {
+		DBERROR("Out of memory allocating rawbuffer.\n");
+		return 0;
+	}
+
+	vnc->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,vnc->serverFormat->width,vnc->serverFormat->height,vnc->bpp,vnc->rmask,vnc->gmask,vnc->bmask,0);
+	if (!vnc->framebuffer) {
+		free(vnc->rawbuffer);
+		DBERROR("Could not create framebuffer.\n");
+		return 0;
+	}
+	SDL_SetAlpha(vnc->framebuffer,0,0);
+	DBMESSAGE("Framebuffer created.\n");
+
+	// Initial fb update flag is whole screen
+	vnc->fbupdated=0;
+	vnc->updatedRect.x=0;
+	vnc->updatedRect.y=0;
+	vnc->updatedRect.w=vnc->serverFormat->width;
+	vnc->updatedRect.h=vnc->serverFormat->height;
+
+	// Create 32x32 cursorbuffer (with alpha)
+	vnc->cursorbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,32,32,vnc->bpp,vnc->rmask,vnc->gmask,vnc->bmask,vnc->amask);
+	SDL_SetAlpha(vnc->cursorbuffer,SDL_SRCALPHA,0);
+	if (vnc->cursorbuffer==NULL) {
+		DBERROR("Could not create cursorbuffer.\n");
+		return 0;
+	} else {
+		DBMESSAGE("Cursorbuffer created.\n");
+	}
+
+	// Create standard update request
+	vnc->updateRequest->messagetype = 3;
+	vnc->updateRequest->incremental = 0;
+	vnc->updateRequest->rect.x=0;
+	vnc->updateRequest->rect.y=0;
+	vnc->updateRequest->rect.width=vnc->serverFormat->width;
+	vnc->updateRequest->rect.height=vnc->serverFormat->height;
+	vnc_rect_swap(&vnc->updateRequest->rect);
+
+	return 1;
+}
+
+
+int vncConnect(tSDL_vnc *vnc, char *host, int port, char *mode, char *password, int framerate) {
+	ssize_t sent, datalen;
+	uint8_t shared = 1;
+
+	if (!initVNC(vnc, framerate))
+		return 0;
+
+	if((vnc->socket = connectSocket(host, port)) == -1)
+		return 0;
+
+	if (!handshakeVersion(vnc))
+		return 0;
+
+	if (!handshakeSecurity(vnc, password))
+		return 0;
+
+	// Send Client Initialization
+	datalen = sizeof(shared);
+	sent = send(vnc->socket, vnc->buffer, datalen, 0);
+	if (sent != datalen) {
+		DBERROR("Write error on client initialization.\n");
+		return 0;
+	}
+	DBMESSAGE("Client Initialization: shared\n");
+
+	if (!negotiatePixels(vnc))
+		return 0;
+
+	if (!negotiateEncodings(vnc, mode))
+		return 0;
+
+
+	if (!postInit(vnc))
+		return 0;
+
+
+	// Initial framebuffer update request
+	static_assert(sizeof(*vnc->updateRequest) == 10, "Size of update request shoud be 10");
+	datalen = sizeof(*vnc->updateRequest);
+	sent = send(vnc->socket, vnc->updateRequest, datalen, 0);
+	if (sent != 10) {
+		DBERROR("Write error on initial update request.\n");
+		return 0;
+	}
+	DBMESSAGE("Initial Framebuffer Update Request sent\n");
+
+	// Modify update request for incremental updates
+	vnc->updateRequest->incremental = 1;
+
+	// Start client thread
+	DBMESSAGE("Starting Thread...\n");
+	vnc->thread = SDL_CreateThread(vncClientThread, vnc);
+	return 1;
 }
 
 int vncBlitFramebuffer(tSDL_vnc *vnc, SDL_Surface *target, SDL_Rect *urec) {
@@ -1321,8 +1503,8 @@ int vncClientKeyevent(tSDL_vnc *vnc, unsigned char downflag, unsigned int key)
 	if (vnc->clientbufferpos<(VNC_BUFSIZE-8)) {
 		clientKeyevent.messagetype=4;
 		clientKeyevent.downflag=downflag;
-		clientKeyevent.key=swap_32(key);
-		memcpy(&vnc->clientbuffer[vnc->clientbufferpos],&clientKeyevent,8);
+		clientKeyevent.key=ntohl(key);
+		memcpy(vnc->clientbuffer + vnc->clientbufferpos, &clientKeyevent, 8);
 		vnc->clientbufferpos += 8;
 		result = 1;
 	} else {
@@ -1342,9 +1524,9 @@ int vncClientPointerevent(tSDL_vnc *vnc, unsigned char buttonmask, unsigned shor
 	if (vnc->clientbufferpos<(VNC_BUFSIZE-6)) {
 		clientPointerevent.messagetype=5;
 		clientPointerevent.buttonmask=buttonmask;
-		clientPointerevent.x=swap_16(x);
-		clientPointerevent.y=swap_16(y);
-		memcpy(&vnc->clientbuffer[vnc->clientbufferpos],&clientPointerevent,6);
+		clientPointerevent.x=ntohs(x);
+		clientPointerevent.y=ntohs(y);
+		memcpy(vnc->clientbuffer + vnc->clientbufferpos, &clientPointerevent, 6);
 		vnc->clientbufferpos += 6;
 		result = 1;
 	} else {
