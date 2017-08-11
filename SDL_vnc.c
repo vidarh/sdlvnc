@@ -1148,7 +1148,8 @@ const struct EncName str_enc[] = {
 static VNCEncoding nameToEnc(const char *name) {
 
 	for (int i = 0; i < ARRSIZE(str_enc); i++) {
-		if (strcasecmp(str_enc[i].name, name)==0) {
+		const char *m = str_enc[i].name;
+		if (strncasecmp(m, name, strlen(m))==0) {
 			return str_enc[i].enc;
 		}
 	}
